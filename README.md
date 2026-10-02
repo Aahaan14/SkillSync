@@ -1,4 +1,4 @@
-# Career Copilot - SkillSync
+# SkillSync
 
 Career Copilot is a production-quality MVP of a **Career Intelligence Copilot**. It helps job seekers understand the gap between their current profile and evolving job market expectations.
 
