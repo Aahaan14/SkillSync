@@ -761,7 +761,7 @@ Full browser-level verification has intentionally been deferred to Phase 14.
 
 ## Status
 
-**IN PROGRESS**
+**COMPLETE**
 
 ## Objective
 
@@ -976,7 +976,7 @@ Phase 9 is complete only when:
 
 ## Status
 
-**PLANNED**
+**IN PROGRESS**
 
 ## Objective
 
