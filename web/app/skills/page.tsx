@@ -1,100 +1,87 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { getLatestAnalysis } from "@/lib/api";
 import { motion } from "framer-motion";
-import { Analysis } from "@/types";
-import { Target, AlertTriangle } from "lucide-react";
+import { AlertTriangle, Target } from "lucide-react";
+import { AnalysisGate } from "@/components/AnalysisGate";
+import { MarketDisclaimer } from "@/components/States";
+import { formatPercent, skillLabel } from "@/lib/format";
+import type { Analysis } from "@/types";
 
 export default function SkillsPage() {
-  const [analysis, setAnalysis] = useState<Analysis | null>(null);
-  const [loading, setLoading] = useState(true);
+  return <AnalysisGate>{(analysis) => <Skills analysis={analysis} />}</AnalysisGate>;
+}
 
-  useEffect(() => {
-    getLatestAnalysis()
-      .then(setAnalysis)
-      .catch(() => setAnalysis(null))
-      .finally(() => setLoading(false));
-  }, []);
+function clampWidth(value: number): number {
+  return Math.min(100, Math.max(0, value));
+}
 
-  if (loading || !analysis) return null;
+function Skills({ analysis }: { analysis: Analysis }) {
+  const strengths = analysis.strengths ?? [];
+  const gaps = analysis.skill_gaps ?? [];
 
   return (
     <div className="p-8 max-w-6xl mx-auto space-y-8">
-      <header className="mb-10">
+      <header>
         <h1 className="text-3xl font-bold text-zinc-100 mb-2">Skill Gap Analysis</h1>
-        <p className="text-zinc-400">Direct comparison between your profile and market requirements</p>
+        <p className="text-zinc-400">Your profile compared with skills recognised in the sampled job listings.</p>
       </header>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-        
-        {/* Strengths */}
-        <motion.div 
+        <motion.section
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-zinc-900/40 border border-emerald-500/20 rounded-2xl p-8 backdrop-blur-xl relative overflow-hidden"
+          className="bg-zinc-900/40 border border-emerald-500/20 rounded-2xl p-8 backdrop-blur-xl"
         >
-          <div className="absolute top-0 right-0 p-32 bg-emerald-500/5 rounded-full blur-[100px] -mr-16 -mt-16 pointer-events-none" />
-          
-          <div className="flex items-center gap-3 mb-8 relative">
-            <div className="p-2 bg-emerald-500/20 rounded-lg text-emerald-400">
-              <Target className="w-6 h-6" />
-            </div>
-            <h2 className="text-xl font-semibold text-zinc-100">Verified Strengths</h2>
+          <div className="flex items-center gap-3 mb-8">
+            <div className="p-2 bg-emerald-500/20 rounded-lg text-emerald-400"><Target className="w-6 h-6" /></div>
+            <h2 className="text-xl font-semibold text-zinc-100">Matched skills ({strengths.length})</h2>
           </div>
-
-          <div className="space-y-4 relative">
-            {analysis.strengths?.map((strength, i) => (
-              <div key={i} className="flex items-center justify-between p-4 bg-zinc-950/50 border border-emerald-500/10 rounded-xl group hover:border-emerald-500/30 transition-colors">
-                <span className="font-medium text-zinc-200">{strength.skill}</span>
+          <ul className="space-y-4">
+            {strengths.map((s) => (
+              <li key={s.skill} className="flex items-center justify-between p-4 bg-zinc-950/50 border border-emerald-500/10 rounded-xl">
+                <span className="font-medium text-zinc-200">{skillLabel(s)}</span>
                 <span className="text-sm px-3 py-1 bg-emerald-500/10 text-emerald-400 rounded-full font-medium">
-                  {strength.market_percentage}% Demand
+                  {formatPercent(s.market_percentage)} of listings
                 </span>
-              </div>
+              </li>
             ))}
-            {analysis.strengths?.length === 0 && (
-              <p className="text-zinc-500 text-sm">No significant matching skills found.</p>
-            )}
-          </div>
-        </motion.div>
+          </ul>
+          {strengths.length === 0 && <p className="text-zinc-500 text-sm">None of your profile skills matched the skills recognised in these listings.</p>}
+        </motion.section>
 
-        {/* Gaps */}
-        <motion.div 
+        <motion.section
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
-          className="bg-zinc-900/40 border border-amber-500/20 rounded-2xl p-8 backdrop-blur-xl relative overflow-hidden"
+          className="bg-zinc-900/40 border border-amber-500/20 rounded-2xl p-8 backdrop-blur-xl"
         >
-          <div className="absolute top-0 right-0 p-32 bg-amber-500/5 rounded-full blur-[100px] -mr-16 -mt-16 pointer-events-none" />
-          
-          <div className="flex items-center gap-3 mb-8 relative">
-            <div className="p-2 bg-amber-500/20 rounded-lg text-amber-400">
-              <AlertTriangle className="w-6 h-6" />
-            </div>
-            <h2 className="text-xl font-semibold text-zinc-100">High-Priority Gaps</h2>
+          <div className="flex items-center gap-3 mb-8">
+            <div className="p-2 bg-amber-500/20 rounded-lg text-amber-400"><AlertTriangle className="w-6 h-6" /></div>
+            <h2 className="text-xl font-semibold text-zinc-100">Skill gaps ({gaps.length})</h2>
           </div>
-
-          <div className="space-y-4 relative">
-            {analysis.skill_gaps?.map((gap, i) => (
-              <div key={i} className="flex flex-col gap-2 p-4 bg-zinc-950/50 border border-amber-500/10 rounded-xl group hover:border-amber-500/30 transition-colors">
-                <div className="flex items-center justify-between">
-                  <span className="font-medium text-zinc-200">{gap.skill}</span>
-                  <span className="text-sm px-3 py-1 bg-amber-500/10 text-amber-400 rounded-full font-medium">
-                    {gap.market_percentage}% Demand
+          <ul className="space-y-4">
+            {gaps.map((gap) => (
+              <li key={gap.skill} className="p-4 bg-zinc-950/50 border border-amber-500/10 rounded-xl">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-medium text-zinc-200">
+                    {gap.priority_rank !== undefined && <span className="text-zinc-500 mr-2">#{gap.priority_rank}</span>}
+                    {skillLabel(gap)}
+                  </span>
+                  <span className="text-sm px-3 py-1 bg-amber-500/10 text-amber-400 rounded-full font-medium whitespace-nowrap">
+                    {formatPercent(gap.market_percentage)} of listings
                   </span>
                 </div>
-                {/* Visual indicator of urgency based on percentage */}
-                <div className="w-full bg-zinc-800 rounded-full h-1.5 mt-2">
-                  <div className="bg-amber-500 h-1.5 rounded-full" style={{ width: `${gap.market_percentage}%` }} />
+                <div className="w-full bg-zinc-800 rounded-full h-1.5 mt-3" aria-hidden="true">
+                  <div className="bg-amber-500 h-1.5 rounded-full" style={{ width: `${clampWidth(gap.market_percentage)}%` }} />
                 </div>
-              </div>
+              </li>
             ))}
-            {analysis.skill_gaps?.length === 0 && (
-              <p className="text-zinc-500 text-sm">You possess all top required skills for this role!</p>
-            )}
-          </div>
-        </motion.div>
+          </ul>
+          {gaps.length === 0 && <p className="text-zinc-500 text-sm">Your profile covers every skill recognised in the sampled listings.</p>}
+        </motion.section>
       </div>
+
+      <MarketDisclaimer jobs={analysis.jobs_analyzed_count} />
     </div>
   );
 }

@@ -4,40 +4,84 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { LayoutDashboard, User, BarChart2, BookOpen, LogOut, Target } from 'lucide-react';
-import { getCurrentUser, logout } from '../lib/api';
+import { ApiError, getCurrentUser, isApiError, logout } from '../lib/api';
 import { cn } from '../lib/utils';
+import type { User as AuthUser } from '../types';
+import { ErrorState, LoadingState } from './States';
 
 export function Navigation({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [authError, setAuthError] = useState<ApiError | null>(null);
+  const [logoutError, setLogoutError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
+    let active = true;
     getCurrentUser()
-      .then(setUser)
-      .catch(() => {
-        if (pathname !== '/') router.push('/');
+      .then((u) => {
+        if (!active) return;
+        setUser(u);
+        setAuthError(null);
       })
-      .finally(() => setIsLoading(false));
-  }, [pathname, router]);
+      .catch((error: unknown) => {
+        if (!active) return;
+        setUser(null);
+        if (isApiError(error) && error.kind === 'unauthorized') {
+          // Not signed in (or session expired): go to the sign-in page.
+          setAuthError(null);
+          if (pathname !== '/') router.replace('/');
+        } else {
+          // Backend unavailable etc. – do NOT pretend the user is signed out.
+          setAuthError(isApiError(error) ? error : new ApiError('unknown', 0, 'Could not verify your session.'));
+        }
+      })
+      .finally(() => {
+        if (active) setIsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [pathname, router, attempt]);
+
+  const retry = () => {
+    setIsLoading(true);
+    setAttempt((n) => n + 1);
+  };
 
   const handleLogout = async () => {
+    setLogoutError(null);
     try {
       await logout();
+      setUser(null);
       router.push('/');
-    } catch (e) {
-      console.error('Logout failed', e);
+    } catch {
+      setLogoutError('Sign out failed. Please try again.');
     }
   };
 
   if (isLoading) {
-    return <div className="min-h-screen flex items-center justify-center bg-zinc-950 text-white">Loading...</div>;
+    return (
+      <div className="min-h-screen bg-zinc-950">
+        <LoadingState label="Loading SkillSync…" />
+      </div>
+    );
+  }
+
+  if (authError) {
+    return (
+      <div className="min-h-screen bg-zinc-950 text-zinc-100">
+        <ErrorState error={authError} onRetry={retry} />
+      </div>
+    );
   }
 
   // If not logged in, don't show navigation
-  if (!user && pathname === '/') {
-    return <>{children}</>;
+  if (!user) {
+    // Sign-in page renders bare; any other route is mid-redirect to it.
+    return pathname === '/' ? <>{children}</> : <LoadingState label="Checking your session…" />;
   }
 
   const navItems = [
@@ -87,11 +131,11 @@ export function Navigation({ children }: { children: React.ReactNode }) {
         <div className="p-4 border-t border-zinc-800/50">
           <div className="flex items-center gap-3 px-3 py-3 rounded-lg bg-zinc-900/50 border border-zinc-800/50 mb-3">
             <div className="w-8 h-8 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold text-xs border border-indigo-500/30">
-              {user?.full_name?.charAt(0) || 'U'}
+              {(user.full_name || user.email).charAt(0).toUpperCase()}
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-zinc-200 truncate">{user?.full_name}</p>
-              <p className="text-xs text-zinc-500 truncate">{user?.email}</p>
+              <p className="text-sm font-medium text-zinc-200 truncate">{user.full_name || user.email}</p>
+              <p className="text-xs text-zinc-500 truncate">{user.email}</p>
             </div>
           </div>
           
@@ -102,6 +146,7 @@ export function Navigation({ children }: { children: React.ReactNode }) {
             <LogOut className="w-4 h-4" />
             Sign Out
           </button>
+          {logoutError && <p role="alert" className="mt-2 text-xs text-red-400">{logoutError}</p>}
         </div>
       </aside>
 

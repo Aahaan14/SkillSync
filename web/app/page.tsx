@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { login, register, getCurrentUser } from "@/lib/api";
+import { login, register, getCurrentUser, isApiError } from "@/lib/api";
+import { describeError } from "@/components/States";
 import { ArrowRight, Sparkles } from "lucide-react";
 import { motion } from "framer-motion";
 
@@ -35,7 +36,13 @@ export default function Home() {
       }
       router.push("/dashboard");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Authentication failed");
+      if (isApiError(err)) {
+        // Surface the server's own message for 401/409/422; use friendly copy otherwise.
+        const generic = ["network", "server", "rate_limited", "config"].includes(err.kind);
+        setError(generic ? describeError(err).body : err.message);
+      } else {
+        setError("Authentication failed");
+      }
       setIsLoading(false);
     }
   };
