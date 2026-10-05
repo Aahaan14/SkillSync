@@ -6,7 +6,8 @@ const ACCESS_TOKEN_KEY = 'skillsync_access_token';
 async function getStoredAccessToken(): Promise<string | null> {
   try {
     const stored = await chrome.storage.local.get(ACCESS_TOKEN_KEY);
-    return stored[ACCESS_TOKEN_KEY] || null;
+    const token = stored[ACCESS_TOKEN_KEY];
+    return typeof token === 'string' ? token : null;
   } catch {
     return null;
   }

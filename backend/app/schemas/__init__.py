@@ -12,6 +12,12 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 import re
 
 
+def strip_html(value: str) -> str:
+    """Remove HTML markup, including executable tag contents, from text input."""
+    value = re.sub(r"<(script|style)\b[^>]*>.*?</\1\s*>", "", value, flags=re.IGNORECASE | re.DOTALL)
+    return re.sub(r"<[^>]+>", "", value).strip()
+
+
 # ─── Auth Schemas ───
 
 class UserRegister(BaseModel):
@@ -35,8 +41,7 @@ class UserRegister(BaseModel):
     def sanitize_name(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
-        # Strip HTML tags
-        v = re.sub(r"<[^>]+>", "", v).strip()
+        v = strip_html(v)
         if not v:
             return None
         return v
@@ -144,8 +149,7 @@ class ProfileCreate(BaseModel):
     def sanitize_text(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
-        # Strip HTML tags from text fields
-        v = re.sub(r"<[^>]+>", "", v).strip()
+        v = strip_html(v)
         return v if v else None
 
     @field_validator("profile_url")

@@ -1,5 +1,4 @@
 import pytest
-import asyncio
 from typing import AsyncGenerator
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
@@ -21,18 +20,14 @@ TestingSessionLocal = async_sessionmaker(
 
 async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
     async with TestingSessionLocal() as session:
-        yield session
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
 app.dependency_overrides[get_db] = override_get_db
-
-
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create an instance of the default event loop for each test case."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
-
 
 @pytest.fixture(autouse=True)
 async def setup_db():
@@ -84,3 +79,10 @@ async def admin_user(setup_db) -> User:
         await db.commit()
         await db.refresh(user)
         return user
+
+
+@pytest.fixture
+async def db(setup_db) -> AsyncSession:
+    """Fixture that provides a database session for tests."""
+    async with TestingSessionLocal() as session:
+        yield session

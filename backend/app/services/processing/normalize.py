@@ -8,11 +8,12 @@ import re
 import logging
 from typing import List, Dict, Any, Optional
 
+from app.services.serpapi.jobs import canonicalize_skill
 logger = logging.getLogger(__name__)
 
 
 def normalize_skill_name(skill: str) -> str:
-    """Normalize a skill name for consistent comparison."""
+    """Normalize to the shared Phase 3 canonical skill name."""
     if not skill or not isinstance(skill, str):
         return ""
     
@@ -20,8 +21,7 @@ def normalize_skill_name(skill: str) -> str:
     skill = re.sub(r"<[^>]+>", "", skill)
     # Trim whitespace
     skill = skill.strip()
-    # Title case for display (but lowercase for matching)
-    return skill
+    return canonicalize_skill(skill)
 
 
 def normalize_job_listing(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -55,7 +55,7 @@ def normalize_profile_skills(skills: list) -> List[str]:
         if name and len(name) <= 100:
             normalized.append(name)
     
-    return normalized
+    return list(dict.fromkeys(normalized))
 
 
 def _clean_text(text: Any, max_length: int = 500) -> Optional[str]:
@@ -78,7 +78,7 @@ def _normalize_skills_list(skills: list) -> List[str]:
             cleaned = normalize_skill_name(skill)
             if cleaned and len(cleaned) <= 100:
                 normalized.append(cleaned)
-    return list(set(normalized))  # Deduplicate
+    return list(dict.fromkeys(normalized))  # Deduplicate while preserving order
 
 
 def _validate_url(url: Any) -> Optional[str]:

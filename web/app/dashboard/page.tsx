@@ -50,15 +50,15 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
         <StatCard 
           title="Overall Alignment" 
-          value={`${analysis.overall_alignment_score}%`}
-          subtitle="Match with market"
+          value={analysis.overall_alignment_score != null ? `${analysis.overall_alignment_score}%` : 'N/A'}
+          subtitle="Alignment vs sampled market"
           icon={Target}
           color="text-indigo-400"
           bg="bg-indigo-400/10"
         />
         <StatCard 
           title="Skill Match" 
-          value={`${analysis.skill_alignment}%`}
+          value={analysis.skill_alignment != null ? `${analysis.skill_alignment}%` : 'N/A'}
           subtitle="Required skills present"
           icon={Activity}
           color="text-emerald-400"

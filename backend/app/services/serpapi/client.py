@@ -23,15 +23,27 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# In-memory cache as Redis fallback for development
+# In-memory cache as fallback for development
 _cache: Dict[str, Any] = {}
 _CACHE_MAX_SIZE = 1000
 
+# Global redis client
+_redis_client = None
+
+def get_redis():
+    global _redis_client
+    if _redis_client is None and settings.REDIS_URL:
+        try:
+            import redis.asyncio as aioredis
+            _redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        except ImportError:
+            logger.warning("redis not installed, cannot use Redis cache")
+    return _redis_client
 
 def _cache_key(params: dict) -> str:
     """Generate a deterministic cache key from query params."""
     serialized = json.dumps(params, sort_keys=True)
-    return hashlib.sha256(serialized.encode()).hexdigest()
+    return "serpapi:" + hashlib.sha256(serialized.encode()).hexdigest()
 
 
 async def serpapi_request(
@@ -48,10 +60,22 @@ async def serpapi_request(
         logger.warning("SERPAPI_API_KEY not configured")
         return None
 
-    # Check cache first
     key = _cache_key(params)
+    redis = get_redis()
+    
+    # Check Redis cache first
+    if redis:
+        try:
+            cached = await redis.get(key)
+            if cached:
+                logger.info("SerpApi Redis cache hit: key=%s", key)
+                return json.loads(cached)
+        except Exception as e:
+            logger.error("Redis cache error: %s", str(e))
+    
+    # Fallback to in-memory cache
     if key in _cache:
-        logger.info("SerpApi cache hit: key=%s", key[:12])
+        logger.info("SerpApi in-memory cache hit: key=%s", key)
         return _cache[key]
 
     # Add API key server-side
@@ -67,7 +91,16 @@ async def serpapi_request(
 
             if response.status_code == 200:
                 data = response.json()
-                # Cache the result
+                
+                # Cache the result in Redis
+                if redis:
+                    try:
+                        ttl_seconds = settings.SERPAPI_CACHE_TTL_HOURS * 3600
+                        await redis.setex(key, ttl_seconds, json.dumps(data))
+                    except Exception as e:
+                        logger.error("Redis cache set error: %s", str(e))
+                        
+                # Fallback in-memory cache
                 if len(_cache) < _CACHE_MAX_SIZE:
                     _cache[key] = data
                 logger.info("SerpApi request successful: params=%s", {k: v for k, v in params.items() if k != "api_key"})

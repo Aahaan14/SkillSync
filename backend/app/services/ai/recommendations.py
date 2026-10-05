@@ -9,6 +9,7 @@ import logging
 from typing import Dict, Any, Optional, List
 
 from app.services.ai.client import get_ai_provider
+from app.services.ai.validation import validate_recommendations_response
 
 logger = logging.getLogger(__name__)
 
@@ -60,18 +61,14 @@ Generate 5-8 specific, prioritized recommendations.
     )
 
     if not response:
+        logger.warning("Recommendations returned no response")
         return None
 
-    try:
-        response = response.strip()
-        if response.startswith("```json"):
-            response = response[7:]
-        if response.startswith("```"):
-            response = response[3:]
-        if response.endswith("```"):
-            response = response[:-3]
-
-        return json.loads(response.strip())
-    except json.JSONDecodeError:
-        logger.error("Failed to parse recommendations response as JSON")
+    # Validate response using robust validation
+    result = validate_recommendations_response(response)
+    
+    if result is None:
+        logger.warning("Recommendations validation failed")
         return None
+    
+    return result

@@ -8,6 +8,8 @@ strengths and skill gaps.
 import logging
 from typing import List, Dict, Any, Tuple
 
+from app.services.serpapi.jobs import canonicalize_skill, skill_display_name
+
 logger = logging.getLogger(__name__)
 
 
@@ -24,36 +26,47 @@ def compare_user_vs_market(
     Strengths: skills the user has that are in demand
     Gaps: skills in demand that the user lacks
     """
-    # Normalize user skills for comparison
-    user_skills_normalized = {s.lower().strip() for s in user_skills if isinstance(s, str)}
+    # The comparison always uses Phase 3 canonical names, not presentation text.
+    user_skills_normalized = {
+        canonicalize_skill(skill)
+        for skill in user_skills
+        if isinstance(skill, str) and canonicalize_skill(skill)
+    }
 
     strengths = []
     gaps = []
 
     for skill_name, data in market_skills.items():
-        skill_lower = skill_name.lower().strip()
+        canonical_skill = data.get("canonical_skill") or canonicalize_skill(skill_name)
+        if not canonical_skill:
+            continue
         percentage = data.get("percentage", 0)
         count = data.get("count", 0)
+        display_name = data.get("display_name") or skill_display_name(canonical_skill)
 
-        if skill_lower in user_skills_normalized:
-            strengths.append({
-                "skill": skill_name,
-                "market_percentage": percentage,
-                "market_count": count,
-                "status": "strong",
-            })
+        entry = {
+            # Existing field names are retained for API compatibility.
+            "skill": canonical_skill,
+            "canonical_skill": canonical_skill,
+            "display_name": display_name,
+            "market_percentage": percentage,
+            "demand_percentage": percentage,
+            "market_count": count,
+            "jobs_requiring": data.get("jobs_requiring", count),
+        }
+        if canonical_skill in user_skills_normalized:
+            entry["status"] = "strong"
+            strengths.append(entry)
         else:
-            gaps.append({
-                "skill": skill_name,
-                "market_percentage": percentage,
-                "market_count": count,
-                "status": "missing",
-            })
+            entry["status"] = "missing"
+            gaps.append(entry)
 
     # Sort strengths by market demand (highest first)
-    strengths.sort(key=lambda x: x["market_percentage"], reverse=True)
+    strengths.sort(key=lambda x: (-x["market_percentage"], x["skill"]))
     # Sort gaps by market demand (highest demand gaps first — most critical)
-    gaps.sort(key=lambda x: x["market_percentage"], reverse=True)
+    gaps.sort(key=lambda x: (-x["market_percentage"], x["skill"]))
+    for rank, gap in enumerate(gaps, start=1):
+        gap["priority_rank"] = rank
 
     return strengths, gaps
 
@@ -64,10 +77,12 @@ def calculate_alignment_score(
     total_market_skills: int,
 ) -> float:
     """
-    Calculate an overall skill alignment score.
+    Calculate weighted skill alignment for the sampled job listings.
     
-    This is Career Copilot's analysis based on the sampled listings.
-    It is NOT an objective industry-wide score.
+    Formula: sum(demand percentage for matched skills) / sum(demand
+    percentage for all recognized market skills) * 100. It measures sampled
+    skill coverage only; it is not a hiring, interview, salary, or employment
+    prediction.
     """
     if total_market_skills == 0:
         return 0.0

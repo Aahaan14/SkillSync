@@ -13,6 +13,7 @@ import logging
 from typing import Dict, Any, Optional, List
 
 from app.services.ai.client import get_ai_provider
+from app.services.ai.validation import validate_analysis_response
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,19 @@ CRITICAL RULES:
 5. Be clear that percentages represent the ANALYZED SAMPLE, not the entire global job market.
 6. Respond ONLY in the specified JSON format.
 
+DETERMINISTIC VS AI RESPONSIBILITIES:
+- Market skill demand, jobs analyzed, matched skills, missing skills, skill gaps, and alignment score 
+  are CALCULATED DETERMINISTICALLY by the system. Do NOT override these values.
+- Your role is to INTERPRET and EXPLAIN the deterministic data, not to recalculate it.
+- The alignment_score field in your response is for contextual dimensions (role, education, experience) 
+  only. Never modify the overall skill alignment score.
+
+ROADMAP GENERATION:
+- Base your roadmap on the ACTUAL skill gaps provided in the "Identified Skill Gaps" section.
+- Do not suggest unrelated skills that are not in the gaps list.
+- Each roadmap item should be a skill the user is missing that appears in market demand.
+- Provide reasoning that connects the skill to the provided market data.
+
 OUTPUT FORMAT:
 Return a JSON object with these fields:
 {
@@ -41,7 +55,7 @@ Return a JSON object with these fields:
     ],
     "relevant_roles": ["job title matching current profile", ...],
     "roadmap": [
-        {"skill": "skill to learn", "priority": 1, "reasoning": "why this skill matters"},
+        {"skill": "skill to learn (must be from the gaps list)", "priority": 1-10, "reasoning": "why this skill matters based on market data"},
         ...
     ],
     "alignment_scores": {
@@ -112,28 +126,11 @@ Remember: All percentages refer to the {jobs_analyzed_count} analyzed listings, 
         logger.warning("AI analysis returned no response")
         return None
 
-    # Parse JSON response
-    try:
-        # Try to extract JSON from the response
-        response = response.strip()
-        if response.startswith("```json"):
-            response = response[7:]
-        if response.startswith("```"):
-            response = response[3:]
-        if response.endswith("```"):
-            response = response[:-3]
-
-        result = json.loads(response.strip())
-        return result
-    except json.JSONDecodeError:
-        logger.error("Failed to parse AI response as JSON")
-        # Return a basic structure if AI response isn't valid JSON
-        return {
-            "summary": response[:500] if response else "Analysis unavailable",
-            "strengths": strengths,
-            "gaps": gaps,
-            "recommendations": [],
-            "relevant_roles": [],
-            "roadmap": [],
-            "alignment_scores": {},
-        }
+    # Validate response using robust validation
+    result = validate_analysis_response(response, strengths, gaps)
+    
+    if result is None:
+        logger.warning("AI response validation failed")
+        return None
+    
+    return result

@@ -1,4 +1,8 @@
 fastapi==0.111.0
+# FastAPI 0.111.0 installs orjson transitively.  This pin selects the
+# prebuilt CPython 3.12 MinGW/UCRT wheel used by the supported local runtime,
+# avoiding a Rust source build during installation.
+orjson==3.9.15
 uvicorn[standard]==0.30.1
 pydantic==2.7.4
 pydantic-settings==2.3.4

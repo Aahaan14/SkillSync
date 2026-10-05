@@ -25,9 +25,18 @@ COMPARE USER VS MARKET
      ↓
 IDENTIFY SKILL GAPS
      ↓
-AI ANALYSIS
+DETERMINISTIC ALIGNMENT SCORE
+     ↓
+AI ANALYSIS (enrichment layer, not required for core functionality)
      ↓
 PERSONALIZED RECOMMENDATIONS
+
+DETERMINISTIC VS AI SEPARATION:
+- Deterministic: jobs_analyzed_count, market_skills, strengths, skill_gaps, 
+  skill_alignment, overall_alignment_score
+- AI: ai_summary, ai_strengths, ai_gaps, ai_recommendations, ai_relevant_roles, 
+  ai_roadmap, role_alignment, education_alignment, experience_alignment
+- If AI fails, deterministic analysis is still complete and returned
 """
 
 import json
@@ -128,20 +137,20 @@ async def run_analysis_pipeline(
         analysis.strengths = strengths
         analysis.skill_gaps = gaps
 
-        # Step 8: Calculate alignment score
+        # Step 8: Calculate alignment score (DETERMINISTIC)
         total_market_skills = len(market_skills)
         alignment = calculate_alignment_score(strengths, gaps, total_market_skills)
         analysis.skill_alignment = alignment
         analysis.overall_alignment_score = alignment
 
         logger.info(
-            "Comparison complete: strengths=%d gaps=%d alignment=%.1f%%",
+            "DETERMINISTIC alignment complete: strengths=%d gaps=%d alignment=%.1f%%",
             len(strengths),
             len(gaps),
             alignment,
         )
 
-        # Step 9: AI Analysis
+        # Step 9: AI Analysis (ENRICHMENT LAYER - not required for core functionality)
         market_summary = _generate_market_summary(unique_jobs)
         strength_names = [s["skill"] for s in strengths]
         gap_names = [g["skill"] for g in gaps]
@@ -156,6 +165,7 @@ async def run_analysis_pipeline(
         )
 
         if ai_result:
+            # AI enrichment - these fields are optional
             analysis.ai_summary = ai_result.get("summary")
             analysis.ai_strengths = ai_result.get("strengths", [])
             analysis.ai_gaps = ai_result.get("gaps", [])
@@ -163,28 +173,19 @@ async def run_analysis_pipeline(
             analysis.ai_relevant_roles = ai_result.get("relevant_roles", [])
             analysis.ai_roadmap = ai_result.get("roadmap", [])
 
-            # Update alignment scores from AI if available
+            # AI-provided contextual alignment scores (not authoritative)
             ai_scores = ai_result.get("alignment_scores", {})
             if ai_scores:
                 analysis.role_alignment = _to_percentage(ai_scores.get("role_alignment"))
                 analysis.education_alignment = _to_percentage(ai_scores.get("education_alignment"))
                 analysis.experience_alignment = _to_percentage(ai_scores.get("experience_alignment"))
-                # Recalculate overall as average
-                scores = [
-                    s for s in [
-                        analysis.skill_alignment,
-                        analysis.role_alignment,
-                        analysis.education_alignment,
-                        analysis.experience_alignment,
-                    ]
-                    if s is not None
-                ]
-                if scores:
-                    analysis.overall_alignment_score = round(sum(scores) / len(scores), 1)
+                # CRITICAL: overall_alignment_score remains the deterministic skill alignment
+                # AI dimensions are for context only, never override the deterministic score
 
-            logger.info("AI analysis complete")
+            logger.info("AI enrichment complete")
         else:
-            logger.warning("AI analysis unavailable — returning data-only results")
+            logger.warning("AI enrichment unavailable — returning deterministic-only results")
+            # Deterministic analysis is complete; AI failure does not break the pipeline
 
         # Step 10: Mark as completed
         analysis.status = AnalysisStatus.COMPLETED

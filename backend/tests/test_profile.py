@@ -1,6 +1,8 @@
 import pytest
 from httpx import AsyncClient
 
+from app.core.security import create_access_token
+
 pytestmark = pytest.mark.asyncio
 
 @pytest.fixture
@@ -47,53 +49,35 @@ async def test_upsert_profile(client: AsyncClient, auth_headers):
 
 
 async def test_profile_ownership_isolation(client: AsyncClient, admin_user, test_user):
-    """Test that a user cannot access another user's profile."""
-    # First, test_user creates a profile
-    await client.post(
-        "/api/auth/login",
-        json={"email": "test@example.com", "password": "Password123"}
+    """Profiles are selected only from the authenticated identity."""
+    user_headers = {"Authorization": f"Bearer {create_access_token({'sub': str(test_user.id)})}"}
+    admin_headers = {"Authorization": f"Bearer {create_access_token({'sub': str(admin_user.id)})}"}
+
+    response = await client.put(
+        "/api/profile",
+        json={"name": "User One", "headline": "Engineer"},
+        headers=user_headers,
     )
-    await client.put(
-        "/api/profile", 
-        json={"name": "User One", "headline": "Engineer"}
-    )
-    
-    # Clear client cookies and log in as admin_user
-    client.cookies.clear()
-    await client.post(
-        "/api/auth/login",
-        json={"email": "admin@example.com", "password": "AdminPass123"}
-    )
-    
-    # Admin tries to get their own profile (should be 404 since they didn't create one)
-    response = await client.get("/api/profile")
+    assert response.status_code == 200
+
+    # The other user's token cannot retrieve the first user's profile.
+    response = await client.get("/api/profile", headers=admin_headers)
     assert response.status_code == 404
-    
-    # Creating a profile creates one for the admin, NOT overwriting the test_user's
-    await client.put(
-        "/api/profile", 
-        json={"name": "Admin Profile", "headline": "Admin"}
+
+    response = await client.put(
+        "/api/profile",
+        json={"name": "Admin Profile", "headline": "Admin"},
+        headers=admin_headers,
     )
-    
-    # Now check both profiles exist independently
-    # Admin profile
-    response = await client.get("/api/profile")
+    assert response.status_code == 200
+
+    response = await client.get("/api/profile", headers=admin_headers)
     assert response.status_code == 200
     assert response.json()["name"] == "Admin Profile"
-    
-    # Back to test user
-    client.cookies.clear()
-    await client.post(
-        "/api/auth/login",
-        json={"email": "test@example.com", "password": "Password123"}
-    )
-    response = await client.get("/api/profile")
+
+    response = await client.get("/api/profile", headers=user_headers)
     assert response.status_code == 200
     assert response.json()["name"] == "User One"
-    
-    # Notice there is no /api/profile/{id} endpoint by design, which prevents 
-    # even attempting horizontal privilege escalation. All access goes through /api/profile
-    # which uses the user_id from the token.
 
 
 async def test_profile_validation(client: AsyncClient, auth_headers):

@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { resolve } from 'path';
+import path from 'path';
 
 export default defineConfig({
   plugins: [react()],
@@ -9,10 +9,10 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       input: {
-        popup: resolve(import.meta.dirname, 'index.html'),
-        background: resolve(import.meta.dirname, 'src/background/service-worker.ts'),
-        content_linkedin: resolve(import.meta.dirname, 'src/content/linkedin/extractor.ts'),
-        content_generic: resolve(import.meta.dirname, 'src/content/generic/extractor.ts'),
+        popup: path.resolve(__dirname, 'index.html'),
+        background: path.resolve(__dirname, 'src/background/service-worker.ts'),
+        content_linkedin: path.resolve(__dirname, 'src/content/linkedin/extractor.ts'),
+        content_generic: path.resolve(__dirname, 'src/content/generic/extractor.ts'),
       },
       output: {
         entryFileNames: (chunkInfo) => {
