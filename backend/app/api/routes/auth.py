@@ -19,13 +19,14 @@ from app.core.config import settings
 from app.core.dependencies import get_current_user
 from app.database.connection import get_db
 from app.models.user import User, UserRole
+from app.api.responses import UNAUTHORIZED, VALIDATION, SERVER_ERROR, Responses
 from app.schemas import (
-    UserRegister, UserLogin, UserResponse, TokenResponse, MessageResponse,
+    ErrorResponse, UserRegister, UserLogin, UserResponse, TokenResponse, MessageResponse,
 )
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/auth", tags=["auth"])
+router = APIRouter(prefix="/api/auth", tags=["auth"], responses={**SERVER_ERROR})
 
 
 def _set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
@@ -52,7 +53,33 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str)
     )
 
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+def _clear_auth_cookies(response: Response) -> None:
+    """
+    Expire both auth cookies. Browsers only remove a cookie when Path, Domain,
+    Secure, HttpOnly and SameSite match the one that was set, so mirror
+    _set_auth_cookies exactly (otherwise a configured COOKIE_DOMAIN would leave
+    the session cookie in place after "logout").
+    """
+    for key, path in (("access_token", "/"), ("refresh_token", "/api/auth/refresh")):
+        response.delete_cookie(
+            key=key,
+            path=path,
+            domain=settings.COOKIE_DOMAIN,
+            secure=settings.cookie_secure,
+            httponly=True,
+            samesite=settings.COOKIE_SAMESITE,
+        )
+
+
+@router.post(
+    "/register",
+    response_model=UserResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        409: {"model": ErrorResponse, "description": "An account with this email already exists"},
+        **VALIDATION,
+    },
+)
 async def register(
     data: UserRegister,
     response: Response,
@@ -91,7 +118,14 @@ async def register(
     return UserResponse.model_validate(user).model_copy(update={"access_token": access_token})
 
 
-@router.post("/login", response_model=UserResponse)
+@router.post(
+    "/login",
+    response_model=UserResponse,
+    responses={
+        401: {"model": ErrorResponse, "description": "Invalid email or password"},
+        **VALIDATION,
+    },
+)
 async def login(
     data: UserLogin,
     response: Response,
@@ -123,15 +157,20 @@ async def login(
     return UserResponse.model_validate(user).model_copy(update={"access_token": access_token})
 
 
-@router.post("/logout", response_model=MessageResponse)
+@router.post("/logout", response_model=MessageResponse)  # idempotent; always 200
 async def logout(response: Response):
     """Clear auth cookies."""
-    response.delete_cookie("access_token", path="/")
-    response.delete_cookie("refresh_token", path="/api/auth/refresh")
+    _clear_auth_cookies(response)
     return {"message": "Logged out successfully"}
 
 
-@router.post("/refresh", response_model=TokenResponse)
+@router.post(
+    "/refresh",
+    response_model=TokenResponse,
+    responses={
+        401: {"model": ErrorResponse, "description": "Missing, invalid or expired refresh token"},
+    },
+)
 async def refresh_token(
     request: Request,
     response: Response,
@@ -152,8 +191,14 @@ async def refresh_token(
             detail="Invalid or expired refresh token",
         )
 
-    user_id = payload.get("sub")
-    result = await db.execute(select(User).where(User.id == int(user_id)))
+    try:
+        user_id = int(payload.get("sub"))
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token",
+        )
+    result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
 
     if not user:
@@ -172,9 +217,9 @@ async def refresh_token(
     return {"access_token": new_access, "token_type": "bearer"}
 
 
-@router.get("/me", response_model=UserResponse)
+@router.get("/me", response_model=UserResponse, responses={**UNAUTHORIZED})
 async def get_current_user_info(
     current_user: User = Depends(get_current_user),
 ):
-    """Return the currently authenticated user. NEVER returns password_hash."""
+    """Return the currently authenticated user (the authoritative current-user endpoint)."""
     return current_user

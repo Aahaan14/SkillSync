@@ -18,14 +18,27 @@ from app.database.connection import get_db
 from app.models.user import User
 from app.models.profile import Profile
 from app.models.analysis import Analysis, AnalysisStatus
-from app.schemas import AnalysisRequest, AnalysisResponse
+from app.api.responses import UNAUTHORIZED, VALIDATION, SERVER_ERROR, not_found
+from app.schemas import AnalysisRequest, AnalysisResponse, ErrorResponse
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/analysis", tags=["analysis"])
+router = APIRouter(
+    prefix="/api/analysis",
+    tags=["analysis"],
+    responses={**UNAUTHORIZED, **SERVER_ERROR},
+)
 
 
-@router.post("", response_model=AnalysisResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=AnalysisResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        400: {"model": ErrorResponse, "description": "The user has no saved profile to analyse"},
+        **VALIDATION,
+    },
+)
 async def create_analysis(
     data: AnalysisRequest,
     current_user: User = Depends(get_current_user),
@@ -101,7 +114,11 @@ async def create_analysis(
     return analysis
 
 
-@router.get("/latest", response_model=AnalysisResponse)
+@router.get(
+    "/latest",
+    response_model=AnalysisResponse,
+    responses={**not_found("The user has never run an analysis")},
+)
 async def get_latest_analysis(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -124,7 +141,11 @@ async def get_latest_analysis(
     return analysis
 
 
-@router.get("/{analysis_id}", response_model=AnalysisResponse)
+@router.get(
+    "/{analysis_id}",
+    response_model=AnalysisResponse,
+    responses={**not_found("No such analysis, or it belongs to another user")},
+)
 async def get_analysis(
     analysis_id: int,
     current_user: User = Depends(get_current_user),
@@ -148,7 +169,7 @@ async def get_analysis(
     return analysis
 
 
-@router.get("", response_model=list[AnalysisResponse])
+@router.get("", response_model=list[AnalysisResponse])  # newest first, capped at 20, no pagination
 async def list_analyses(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),

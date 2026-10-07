@@ -14,14 +14,23 @@ from app.core.dependencies import get_current_user
 from app.database.connection import get_db
 from app.models.user import User
 from app.models.profile import Profile
+from app.api.responses import UNAUTHORIZED, VALIDATION, SERVER_ERROR, not_found
 from app.schemas import ProfileCreate, ProfileResponse
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/profile", tags=["profile"])
+router = APIRouter(
+    prefix="/api/profile",
+    tags=["profile"],
+    responses={**UNAUTHORIZED, **SERVER_ERROR},
+)
 
 
-@router.get("", response_model=ProfileResponse)
+@router.get(
+    "",
+    response_model=ProfileResponse,
+    responses={**not_found("The user has not saved a profile yet")},
+)
 async def get_profile(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -41,7 +50,7 @@ async def get_profile(
     return profile
 
 
-@router.put("", response_model=ProfileResponse)
+@router.put("", response_model=ProfileResponse, responses={**VALIDATION})
 async def upsert_profile(
     data: ProfileCreate,
     current_user: User = Depends(get_current_user),

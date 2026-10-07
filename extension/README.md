@@ -1,3 +1,29 @@
+# SkillSync Chrome Extension
+
+Manifest V3 popup (React + TypeScript + Vite). It talks **only** to the SkillSync
+backend: it never calls SerpApi or an AI provider and never computes scores.
+
+## Configuration
+
+Copy `.env.example` to `.env.local`:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `VITE_API_URL` | `http://localhost:8000` | Backend origin (`/api` is appended) |
+| `VITE_WEB_URL` | `http://localhost:3000` | Target of the "View Full Web Dashboard" link |
+
+If the API origin is not localhost, also add it to `host_permissions` in
+`public/manifest.json`. These values are bundled into the extension and are
+public: never put provider keys or secrets in them.
+
+## API contract
+
+See `docs/api-contract.md`. Response types live in `src/types/api.ts`
+(guarded against backend drift by `backend/tests/test_client_contract.py`);
+profile limits in `src/api/profilePayload.ts` mirror the backend schema.
+
+---
+
 # React + TypeScript + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.

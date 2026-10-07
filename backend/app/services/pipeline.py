@@ -155,14 +155,21 @@ async def run_analysis_pipeline(
         strength_names = [s["skill"] for s in strengths]
         gap_names = [g["skill"] for g in gaps]
 
-        ai_result = await analyze_profile_vs_market(
-            profile=profile_data,
-            market_skills=market_skills,
-            market_jobs_summary=market_summary,
-            jobs_analyzed_count=len(unique_jobs),
-            strengths=strength_names,
-            gaps=gap_names,
-        )
+        if not unique_jobs:
+            # Nothing was analysed, so there is nothing for the AI to interpret.
+            # Skipping keeps the zero-job contract intact (no invented skills,
+            # roadmap or strengths) and avoids a pointless provider call.
+            logger.info("No jobs analysed - skipping AI enrichment")
+            ai_result = None
+        else:
+            ai_result = await analyze_profile_vs_market(
+                profile=profile_data,
+                market_skills=market_skills,
+                market_jobs_summary=market_summary,
+                jobs_analyzed_count=len(unique_jobs),
+                strengths=strength_names,
+                gaps=gap_names,
+            )
 
         if ai_result:
             # AI enrichment - these fields are optional
@@ -184,7 +191,7 @@ async def run_analysis_pipeline(
 
             logger.info("AI enrichment complete")
         else:
-            logger.warning("AI enrichment unavailable — returning deterministic-only results")
+            logger.info("AI enrichment not applied — returning deterministic-only results")
             # Deterministic analysis is complete; AI failure does not break the pipeline
 
         # Step 10: Mark as completed

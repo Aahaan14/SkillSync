@@ -19,13 +19,19 @@ from app.database.connection import get_db
 from app.models.user import User
 from app.models.analysis import Analysis
 from app.models.profile import Profile
+from app.api.responses import UNAUTHORIZED, FORBIDDEN, SERVER_ERROR
+from app.schemas import AdminStatsResponse, AdminUserResponse
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/admin", tags=["admin"])
+router = APIRouter(
+    prefix="/api/admin",
+    tags=["admin"],
+    responses={**UNAUTHORIZED, **FORBIDDEN, **SERVER_ERROR},
+)
 
 
-@router.get("/stats")
+@router.get("/stats", response_model=AdminStatsResponse)
 async def get_system_stats(
     admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
@@ -42,7 +48,7 @@ async def get_system_stats(
     }
 
 
-@router.get("/users")
+@router.get("/users", response_model=list[AdminUserResponse])
 async def list_users(
     admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),

@@ -2,7 +2,8 @@
 Career Copilot - Market Routes
 
 Endpoints for searching market data via SerpApi and retrieving
-market skill insights. All searches are rate-limited and cached.
+market skill insights. Upstream SerpApi responses are cached server-side;
+per-user rate limiting is not enforced yet (planned for Phase 11).
 """
 
 import logging
@@ -12,14 +13,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.dependencies import get_current_user
 from app.database.connection import get_db
 from app.models.user import User
-from app.schemas import MarketSearchRequest, MarketSearchResponse
+from app.api.responses import UNAUTHORIZED, VALIDATION, SERVER_ERROR, not_found
+from app.schemas import ErrorResponse, MarketSearchRequest, MarketSearchResponse, MarketSkillsResponse
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/market", tags=["market"])
+router = APIRouter(
+    prefix="/api/market",
+    tags=["market"],
+    responses={**UNAUTHORIZED, **SERVER_ERROR},
+)
 
 
-@router.post("/search", response_model=MarketSearchResponse)
+@router.post(
+    "/search",
+    response_model=MarketSearchResponse,
+    responses={
+        503: {"model": ErrorResponse, "description": "Market search is temporarily unavailable"},
+        **VALIDATION,
+    },
+)
 async def search_market(
     data: MarketSearchRequest,
     current_user: User = Depends(get_current_user),
@@ -27,8 +40,9 @@ async def search_market(
 ):
     """
     Search the job market using SerpApi.
-    Results are cached to reduce API costs.
-    Rate-limited per user.
+    Upstream SerpApi responses are cached server-side to reduce API costs
+    (the response's `cached` flag is currently always false).
+    Per-user rate limiting is not enforced yet.
     """
     try:
         from app.services.serpapi.search import search_jobs
@@ -46,7 +60,11 @@ async def search_market(
         )
 
 
-@router.get("/skills")
+@router.get(
+    "/skills",
+    response_model=MarketSkillsResponse,
+    responses={**not_found("No analysis with market skills exists yet")},
+)
 async def get_market_skills(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),

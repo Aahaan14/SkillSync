@@ -1,13 +1,32 @@
-import React, { useState, useEffect } from 'react';
-import { getCurrentUser, login, register, logout, triggerAnalysis, getLatestAnalysis, saveProfile } from '../api/client';
-import { Profile } from '../types';
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  errorMessage,
+  getCurrentUser,
+  getLatestAnalysis,
+  isApiError,
+  login,
+  logout,
+  register,
+  saveProfile,
+  triggerAnalysis,
+} from '../api/client';
+import { WEB_APP_URL } from '../api/config';
+import type { Profile } from '../types';
+import type { Analysis, User } from '../types/api';
 import { Loading } from '../components/Loading';
 import { MatchScore } from '../components/MatchScore';
 import { SkillGap } from '../components/SkillGap';
 import { MarketSkills } from '../components/MarketSkills';
 
+const SESSION_EXPIRED = 'Your session has expired. Please log in again.';
+
+/** Never keep the bearer token in React state; it lives in chrome.storage only. */
+function withoutToken(user: User): User {
+  return { ...user, access_token: null };
+}
+
 function App() {
-  const [user, setUser] = useState<{ email: string } | null>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -15,25 +34,47 @@ function App() {
   const [isRegister, setIsRegister] = useState(false);
   const [error, setError] = useState('');
   
-  const [analysis, setAnalysis] = useState<any>(null);
+  const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [loadingMsg, setLoadingMsg] = useState('');
 
-  // Check auth on load
+  /** Any 401 from an authenticated call means the stored token is no longer valid. */
+  const handleApiFailure = useCallback((err: unknown, fallback: string) => {
+    if (isApiError(err) && err.kind === 'unauthorized') {
+      setUser(null);
+      setAnalysis(null);
+      setError(SESSION_EXPIRED);
+      return;
+    }
+    setError(errorMessage(err, fallback));
+  }, []);
+
+  // Check auth on load. /auth/me is the authoritative "who am I".
   useEffect(() => {
     getCurrentUser()
-      .then(u => setUser(u))
-      .catch(() => setUser(null))
+      .then(u => setUser(withoutToken(u)))
+      .catch((err: unknown) => {
+        setUser(null);
+        // "Not signed in" is the normal logged-out state; anything else is worth showing.
+        if (!(isApiError(err) && err.kind === 'unauthorized')) {
+          setError(errorMessage(err, 'Could not reach SkillSync.'));
+        }
+      })
       .finally(() => setIsCheckingAuth(false));
   }, []);
 
-  // Fetch latest analysis when user changes
+  // Fetch the latest analysis when the signed-in user changes.
   useEffect(() => {
-    if (user) {
-      getLatestAnalysis()
-        .then(data => setAnalysis(data))
-        .catch(() => setAnalysis(null));
-    }
-  }, [user]);
+    if (!user) return;
+    getLatestAnalysis()
+      .then(data => setAnalysis(data))
+      .catch((err: unknown) => {
+        setAnalysis(null);
+        // 404 simply means "no analysis yet"; every other failure is real.
+        if (!(isApiError(err) && err.kind === 'not_found')) {
+          handleApiFailure(err, 'Could not load your latest analysis.');
+        }
+      });
+  }, [user, handleApiFailure]);
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -43,9 +84,10 @@ function App() {
       const u = isRegister
         ? await register(email, password, fullName)
         : await login(email, password);
-      setUser(u);
-    } catch (err: any) {
-      setError(err.message || (isRegister ? 'Registration failed' : 'Login failed'));
+      setUser(withoutToken(u));
+      setPassword('');
+    } catch (err: unknown) {
+      setError(errorMessage(err, isRegister ? 'Registration failed' : 'Login failed'));
     } finally {
       setLoadingMsg('');
     }
@@ -54,6 +96,8 @@ function App() {
   const handleLogout = async () => {
     try {
       await logout();
+    } catch {
+      // The local token is cleared regardless; the server cookie expires on its own.
     } finally {
       setUser(null);
       setAnalysis(null);
@@ -63,37 +107,42 @@ function App() {
   const handleExtractAndAnalyze = async () => {
     setError('');
     setLoadingMsg('Extracting profile data...');
-    
-    // Send message to active tab to extract profile
-    chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
-      const tab = tabs[0];
-      if (tab.id) {
-        chrome.tabs.sendMessage(tab.id, { action: "EXTRACT_PROFILE" }, async function(response) {
-          if (chrome.runtime.lastError) {
-            setError('Could not connect to page. Make sure you are on a profile page and refresh it.');
-            setLoadingMsg('');
-            return;
-          }
-          if (response && response.success && response.profile) {
-            try {
-              setLoadingMsg('Saving profile...');
-              await saveProfile(response.profile as Profile);
-              
-              setLoadingMsg('Analyzing market data... This may take a minute.');
-              const result = await triggerAnalysis();
-              setAnalysis(result);
-            } catch (err: any) {
-              setError(err.message || 'Analysis failed');
-            } finally {
-              setLoadingMsg('');
-            }
-          } else {
-            setError(response?.error || 'Failed to extract profile.');
-            setLoadingMsg('');
-          }
-        });
+
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab?.id) {
+        throw new Error('No active tab found. Open a profile page and try again.');
       }
-    });
+
+      let response: { success?: boolean; profile?: Profile; error?: string } | undefined;
+      try {
+        response = await chrome.tabs.sendMessage(tab.id, { action: 'EXTRACT_PROFILE' });
+      } catch {
+        throw new Error('Could not connect to page. Make sure you are on a profile page and refresh it.');
+      }
+      if (!response?.success || !response.profile) {
+        throw new Error(response?.error || 'Failed to extract profile.');
+      }
+
+      setLoadingMsg('Saving profile...');
+      await saveProfile(response.profile);
+
+      setLoadingMsg('Analyzing market data... This may take a minute.');
+      const result = await triggerAnalysis();
+
+      // POST /analysis answers 201 even when the run failed; check the status.
+      if (result.status === 'failed') {
+        setError(result.error_message || 'The analysis could not be completed. Please try again.');
+      } else if (result.status !== 'completed') {
+        setError('The analysis is still running. Re-open the popup in a moment.');
+      } else {
+        setAnalysis(result);
+      }
+    } catch (err: unknown) {
+      handleApiFailure(err, 'Analysis failed');
+    } finally {
+      setLoadingMsg('');
+    }
   };
 
   if (isCheckingAuth) return <Loading message="Starting Copilot..." />;
@@ -188,24 +237,40 @@ function App() {
 
       {/* Main Content */}
       <div className="flex-1 overflow-y-auto">
-        {analysis ? (
-          <>
-            <MatchScore score={analysis.overall_alignment_score || 0} />
-            <SkillGap strengths={analysis.strengths || []} gaps={analysis.skill_gaps || []} />
-            <MarketSkills marketSkills={analysis.market_skills || {}} />
-            
-            <div className="p-4 bg-white mt-2 mb-4 text-center">
-              <a href="http://localhost:3000" target="_blank" rel="noreferrer" className="text-sm font-medium text-brand-600 hover:text-brand-700 underline">
-                View Full Web Dashboard ↗
-              </a>
+        {analysis?.status === 'completed' ? (
+          analysis.jobs_analyzed_count === 0 ? (
+            <div className="p-8 text-center text-sm text-gray-500">
+              The last analysis found no job listings, so there is no market data to compare against.
+              Try again later or from the web dashboard with a target role.
             </div>
-          </>
+          ) : (
+            <>
+              <MatchScore
+                score={analysis.overall_alignment_score}
+                jobsAnalyzed={analysis.jobs_analyzed_count}
+              />
+              <SkillGap strengths={analysis.strengths ?? []} gaps={analysis.skill_gaps ?? []} />
+              <MarketSkills marketSkills={analysis.market_skills ?? {}} />
+            </>
+          )
+        ) : analysis ? (
+          <div className="p-8 text-center text-sm text-gray-500">
+            {analysis.status === 'failed'
+              ? analysis.error_message || 'Your last analysis failed. Try analyzing again.'
+              : 'An analysis is still in progress. Re-open the popup in a moment.'}
+          </div>
         ) : (
           <div className="flex flex-col items-center justify-center h-full p-8 text-center text-gray-500">
             <svg className="w-12 h-12 text-gray-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
             <p className="text-sm">Navigate to a professional profile and click <strong>Analyze Current Page</strong> to get started.</p>
           </div>
         )}
+
+        <div className="p-4 bg-white mt-2 mb-4 text-center">
+          <a href={WEB_APP_URL} target="_blank" rel="noreferrer" className="text-sm font-medium text-brand-600 hover:text-brand-700 underline">
+            View Full Web Dashboard ↗
+          </a>
+        </div>
       </div>
     </div>
   );

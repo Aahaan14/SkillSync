@@ -53,7 +53,7 @@ def _normalize_google_job(raw: dict) -> Dict[str, Any]:
     detected_chips = raw.get("detected_extensions", {})
 
     return {
-        "title": raw.get("title", "Unknown"),
+        "title": raw.get("title") or "Unknown",
         "company": raw.get("company_name", None),
         "location": raw.get("location", None),
         "description": description[:5000] if description else None,

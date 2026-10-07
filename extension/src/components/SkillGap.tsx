@@ -1,11 +1,14 @@
 import React from 'react';
+import type { SkillComparison } from '../types/api';
 
-export const SkillGap = ({ 
-  strengths, 
-  gaps 
-}: { 
-  strengths: any[], 
-  gaps: any[] 
+const label = (entry: SkillComparison) => entry.display_name || entry.skill;
+
+export const SkillGap = ({
+  strengths,
+  gaps,
+}: {
+  strengths: SkillComparison[];
+  gaps: SkillComparison[];
 }) => {
   return (
     <div className="p-4 bg-white">
@@ -15,9 +18,9 @@ export const SkillGap = ({
           Strong Market Alignment
         </h3>
         <div className="flex flex-wrap gap-2">
-          {strengths.slice(0, 5).map((s, i) => (
-            <span key={i} className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-green-50 text-green-700 border border-green-100">
-              ✓ {s.skill}
+          {strengths.slice(0, 5).map((s) => (
+            <span key={s.skill} className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-green-50 text-green-700 border border-green-100">
+              ✓ {label(s)}
             </span>
           ))}
           {strengths.length === 0 && <p className="text-xs text-gray-500">No matching skills found.</p>}
@@ -30,9 +33,9 @@ export const SkillGap = ({
           High-Demand Gaps
         </h3>
         <div className="flex flex-wrap gap-2">
-          {gaps.slice(0, 5).map((g, i) => (
-            <span key={i} className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-yellow-50 text-yellow-800 border border-yellow-100">
-              ⚠ {g.skill} <span className="ml-1 opacity-70">({g.market_percentage}%)</span>
+          {gaps.slice(0, 5).map((g) => (
+            <span key={g.skill} className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-yellow-50 text-yellow-800 border border-yellow-100">
+              ⚠ {label(g)} <span className="ml-1 opacity-70">({g.market_percentage}%)</span>
             </span>
           ))}
           {gaps.length === 0 && <p className="text-xs text-gray-500">No major skill gaps identified!</p>}

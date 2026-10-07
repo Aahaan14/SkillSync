@@ -10,11 +10,14 @@ import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.config import settings
+from app.core.log_safety import install_log_redaction
 from app.database.connection import init_db, close_db
+from app.schemas import HealthResponse
 
 
 # ─── Structured Logging ───
@@ -24,6 +27,9 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
+# Secrets must never reach the logs: httpx logs full request URLs at INFO and
+# SerpApi's key travels in the query string. See app/core/log_safety.py.
+install_log_redaction()
 logger = logging.getLogger("career_copilot")
 
 
@@ -64,7 +70,35 @@ app.add_middleware(
 )
 
 
-# ─── Global Error Handler ───
+# ─── Error Handlers ───
+#
+# Error contract: every error body has a "detail" key.
+#   - 4xx/5xx from the API:  {"detail": "<human readable message>"}
+#   - 422 validation:        {"detail": [{"loc": [...], "msg": "...", "type": "..."}]}
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """
+    Standard 422 shape, minus the fields FastAPI would add by default.
+
+    FastAPI echoes the rejected value in each error's ``input`` (and parser
+    internals in ``ctx``/``url``). For /auth/register that would reflect the
+    submitted password back in the response body, so only the location, message
+    and error type are returned.
+    """
+    issues = [
+        {
+            "loc": [part for part in err.get("loc", ())],
+            "msg": str(err.get("msg", "Invalid value")),
+            "type": str(err.get("type", "value_error")),
+        }
+        for err in exc.errors()
+    ]
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": issues},
+    )
+
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -102,7 +136,7 @@ app.include_router(admin_router)
 
 # ─── Health Check ───
 
-@app.get("/api/health")
+@app.get("/api/health", response_model=HealthResponse, tags=["health"])
 async def health_check():
     """Public health check endpoint."""
     return {"status": "healthy", "service": "career-copilot"}

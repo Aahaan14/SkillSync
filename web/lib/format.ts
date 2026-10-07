@@ -1,6 +1,6 @@
 import type { Analysis, MarketSkill } from '../types';
 
-export function skillLabel(entry: { skill: string; display_name?: string }): string {
+export function skillLabel(entry: { skill: string; display_name?: string | null }): string {
   return entry.display_name || entry.skill;
 }
 

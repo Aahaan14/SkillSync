@@ -6,7 +6,8 @@ database sessions, and rate limiting.
 """
 
 from typing import Optional
-from fastapi import Depends, HTTPException, status, Request, Cookie
+from fastapi import Depends, HTTPException, status
+from fastapi.security import APIKeyCookie, HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import decode_access_token
@@ -14,47 +15,60 @@ from app.database.connection import get_db
 from app.models.user import User, UserRole
 
 
+# Both schemes are declared so /openapi.json documents how authentication works.
+# auto_error=False: the 401 responses below stay the single source of truth for
+# error wording, and either credential alone is enough.
+cookie_scheme = APIKeyCookie(name="access_token", auto_error=False, scheme_name="cookieAuth")
+bearer_scheme = HTTPBearer(auto_error=False, scheme_name="bearerAuth")
+
+
 async def get_current_user(
-    request: Request,
-    access_token: Optional[str] = Cookie(None),
+    cookie_token: Optional[str] = Depends(cookie_scheme),
+    bearer: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """
-    Extract and validate the current user from the access token cookie.
-    
+    Extract and validate the current user from the access token.
+
     The authenticated identity comes from the token, NOT from any
     user-supplied ID in the request body or URL.
+
+    Accepted credentials, in order: ``Authorization: Bearer`` (Chrome extension)
+    then the HTTP-only ``access_token`` cookie (web dashboard). The first one that
+    validates wins, so a stale cookie cannot lock out a client that also holds a
+    valid bearer token (the extension shares the browser's cookie jar for
+    localhost). Both are verified identically.
     """
-    token = access_token
+    candidates = [t for t in (bearer.credentials if bearer else None, cookie_token) if t]
 
-    # Also check Authorization header for API clients (extension)
-    if not token:
-        auth_header = request.headers.get("Authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-
-    if not token:
+    if not candidates:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
         )
 
-    payload = decode_access_token(token)
+    payload = None
+    for token in candidates:
+        payload = decode_access_token(token)
+        if payload is not None:
+            break
+
     if payload is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
         )
 
-    user_id = payload.get("sub")
-    if user_id is None:
+    try:
+        user_id = int(payload.get("sub"))
+    except (TypeError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token payload",
         )
 
     from sqlalchemy import select
-    result = await db.execute(select(User).where(User.id == int(user_id)))
+    result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
 
     if user is None:

@@ -7,15 +7,42 @@ password_hash is NEVER included in response schemas.
 """
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, EmailStr, Field, field_validator
 import re
+
+from app.models.analysis import AnalysisStatus
+from app.models.user import UserRole
 
 
 def strip_html(value: str) -> str:
     """Remove HTML markup, including executable tag contents, from text input."""
     value = re.sub(r"<(script|style)\b[^>]*>.*?</\1\s*>", "", value, flags=re.IGNORECASE | re.DOTALL)
     return re.sub(r"<[^>]+>", "", value).strip()
+
+
+# ─── Error Contract ───
+
+class ErrorResponse(BaseModel):
+    """
+    Body of every non-validation error (400, 401, 403, 404, 409, 429, 500, 503).
+
+    Validation failures (422) use the standard FastAPI list form instead:
+    ``{"detail": [{"loc": [...], "msg": "...", "type": "..."}]}``.
+    Clients must treat ``detail`` as ``string | ValidationIssue[]``.
+    """
+    detail: str
+
+
+class ValidationIssue(BaseModel):
+    """One entry of a 422 response. Submitted values are intentionally NOT echoed."""
+    loc: List[str | int]
+    msg: str
+    type: str
+
+
+class ValidationErrorResponse(BaseModel):
+    detail: List[ValidationIssue]
 
 
 # ─── Auth Schemas ───
@@ -53,15 +80,17 @@ class UserLogin(BaseModel):
 
 
 class UserResponse(BaseModel):
-    """User response — NEVER includes password_hash."""
+    """The authenticated user. Never includes any credential material."""
     id: int
     email: str
     full_name: Optional[str]
-    role: str
+    role: UserRole
     created_at: datetime
     updated_at: datetime
-    # Returned so Chrome extension clients can send Authorization: Bearer
-    # (HTTP-only cookies are not sent from chrome-extension:// to localhost).
+    # Only populated by POST /auth/register and POST /auth/login (null from
+    # GET /auth/me). Returned so Chrome extension clients can send
+    # Authorization: Bearer, because HTTP-only cookies are not sent from
+    # chrome-extension:// to localhost. The web dashboard ignores it.
     access_token: Optional[str] = None
 
     model_config = {"from_attributes": True}
@@ -173,11 +202,11 @@ class ProfileResponse(BaseModel):
     about: Optional[str]
     location: Optional[str]
     profile_url: Optional[str]
-    skills: list
-    experience: list
-    education: list
-    certifications: list
-    projects: list
+    skills: List[SkillItem]
+    experience: List[ExperienceItem]
+    education: List[EducationItem]
+    certifications: List[CertificationItem]
+    projects: List[ProjectItem]
     source: Optional[str]
     created_at: datetime
     updated_at: datetime
@@ -213,40 +242,89 @@ class AnalysisRequest(BaseModel):
         return sanitized
 
 
-class MarketSkillDemand(BaseModel):
-    skill: str
+class MarketSkillEntry(BaseModel):
+    """
+    One value of ``Analysis.market_skills`` (the dict is keyed by canonical skill).
+    Deterministic: computed from the analysed job sample, never by the AI.
+    """
+    canonical_skill: Optional[str] = None
+    display_name: Optional[str] = None
+    # Jobs in the sample mentioning the skill; 0 <= count <= jobs_analyzed_count.
     count: int
-    percentage: float
-    user_has: bool
+    jobs_requiring: Optional[int] = None
+    # Share of the sampled jobs mentioning the skill, 0-100 inclusive.
+    percentage: float = Field(
+        ..., json_schema_extra={"minimum": 0, "maximum": 100}
+    )
 
 
-class AlignmentScores(BaseModel):
-    overall: Optional[float] = None
-    skill_alignment: Optional[float] = None
-    role_alignment: Optional[float] = None
-    education_alignment: Optional[float] = None
-    experience_alignment: Optional[float] = None
+class SkillComparison(BaseModel):
+    """
+    One entry of ``Analysis.strengths`` (status "strong") or
+    ``Analysis.skill_gaps`` (status "missing"). Deterministic.
+    """
+    skill: str
+    canonical_skill: Optional[str] = None
+    display_name: Optional[str] = None
+    market_percentage: float = Field(
+        ..., json_schema_extra={"minimum": 0, "maximum": 100}
+    )
+    demand_percentage: Optional[float] = None
+    market_count: Optional[int] = None
+    jobs_requiring: Optional[int] = None
+    status: Optional[Literal["strong", "missing"]] = None
+    # Gaps only: 1 = highest-demand missing skill. null on strengths.
+    priority_rank: Optional[int] = None
+
+
+class AIRecommendation(BaseModel):
+    """AI enrichment only. ``priority`` is "high" | "medium" | "low"."""
+    action: str
+    reason: Optional[str] = None
+    priority: Optional[str] = None
+
+
+class AIRoadmapItem(BaseModel):
+    """AI enrichment only. ``priority`` is 1 (most important) to 10."""
+    skill: str
+    priority: Optional[int] = None
+    reasoning: Optional[str] = None
 
 
 class AnalysisResponse(BaseModel):
+    """
+    One analysis run.
+
+    DETERMINISTIC (authoritative, never written by the AI):
+      jobs_analyzed_count, market_skills, strengths, skill_gaps,
+      skill_alignment, overall_alignment_score (always equal to skill_alignment).
+
+    AI-DERIVED (optional enrichment, may be null/empty when the AI is unavailable):
+      ai_*, role_alignment, education_alignment, experience_alignment.
+
+    A run that finishes with zero jobs is still ``completed``: jobs_analyzed_count
+    is 0, market_skills is {}, strengths and skill_gaps are [] and the scores are 0.
+    A run can also be returned with ``status = failed`` (HTTP 201 on POST) and an
+    ``error_message``; clients must check ``status`` before rendering results.
+    """
     id: int
-    status: str
+    status: AnalysisStatus
     jobs_analyzed_count: int
-    market_skills: Optional[dict]
-    strengths: Optional[list]
-    skill_gaps: Optional[list]
+    market_skills: Optional[Dict[str, MarketSkillEntry]]
+    strengths: Optional[List[SkillComparison]]
+    skill_gaps: Optional[List[SkillComparison]]
     overall_alignment_score: Optional[float]
     skill_alignment: Optional[float]
     role_alignment: Optional[float]
     education_alignment: Optional[float]
     experience_alignment: Optional[float]
     ai_summary: Optional[str]
-    ai_strengths: Optional[list]
-    ai_gaps: Optional[list]
-    ai_recommendations: Optional[list]
-    ai_relevant_roles: Optional[list]
-    ai_roadmap: Optional[list]
-    search_queries: Optional[list]
+    ai_strengths: Optional[List[str]]
+    ai_gaps: Optional[List[str]]
+    ai_recommendations: Optional[List[AIRecommendation]]
+    ai_relevant_roles: Optional[List[str]]
+    ai_roadmap: Optional[List[AIRoadmapItem]]
+    search_queries: Optional[List[str]]
     error_message: Optional[str]
     created_at: datetime
     updated_at: datetime
@@ -274,7 +352,7 @@ class MarketJobResponse(BaseModel):
     title: str
     company: Optional[str]
     location: Optional[str]
-    skills: list
+    skills: List[str]
     experience: Optional[str]
     education: Optional[str]
     salary: Optional[str]
@@ -288,3 +366,32 @@ class MarketSearchResponse(BaseModel):
     jobs: List[MarketJobResponse]
     total_results: int
     cached: bool = False
+
+
+class MarketSkillsResponse(BaseModel):
+    """GET /api/market/skills - the latest analysis' deterministic market skills."""
+    market_skills: Dict[str, MarketSkillEntry]
+    jobs_analyzed_count: int
+    # ISO-8601 timestamp of the analysis the skills came from.
+    analysis_date: str
+
+
+# ─── Admin / Health Schemas ───
+
+class AdminStatsResponse(BaseModel):
+    total_users: int
+    total_profiles: int
+    total_analyses: int
+
+
+class AdminUserResponse(BaseModel):
+    id: int
+    email: str
+    full_name: Optional[str]
+    role: UserRole
+    created_at: str
+
+
+class HealthResponse(BaseModel):
+    status: str
+    service: str
