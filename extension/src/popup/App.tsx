@@ -3,6 +3,7 @@ import {
   errorMessage,
   getCurrentUser,
   getLatestAnalysis,
+  addSkillsToProfile,
   isApiError,
   login,
   logout,
@@ -237,19 +238,49 @@ function App() {
       if (!extraction.success) throw new Error(extraction.error);
       const { profile, report } = extraction;
 
-      // Do not replace the saved profile with something the backend cannot analyse.
-      const verdict = assessProfile(profile, report);
-      if (!verdict.canAnalyze) {
-        setNotice({
-          tone: 'error',
-          message: verdict.blockingReason ?? "Couldn't read this page.",
-          action: { label: 'Copy diagnostic details', onClick: () => void copyDetails(report)() },
-        });
-        return;
-      }
+      let summary: string;
+      let verdictWarnings: string[];
 
-      setPhase('saving');
-      await saveProfile(profile);
+      if (classifyPage(tab.url).kind === 'linkedin-skills') {
+        // The full skills list: add to the saved profile instead of replacing it.
+        if (!profile.skills.length) {
+          setNotice({
+            tone: 'error',
+            message: 'No skills were found on this page yet. Scroll down so the list loads, then try again.',
+          });
+          return;
+        }
+        setPhase('saving');
+        try {
+          const { added, total } = await addSkillsToProfile(profile.skills);
+          summary = `${total} skills saved (${added} new from this page)`;
+          verdictWarnings = [];
+        } catch (err: unknown) {
+          if (isApiError(err) && err.kind === 'not_found') {
+            setNotice({
+              tone: 'warning',
+              message: 'Analyze your main LinkedIn profile page first (it saves your headline and roles), then come back here to add the rest of your skills.',
+            });
+            return;
+          }
+          throw err;
+        }
+      } else {
+        // Do not replace the saved profile with something the backend cannot analyse.
+        const verdict = assessProfile(profile, report);
+        if (!verdict.canAnalyze) {
+          setNotice({
+            tone: 'error',
+            message: verdict.blockingReason ?? "Couldn't read this page.",
+            action: { label: 'Copy diagnostic details', onClick: () => void copyDetails(report)() },
+          });
+          return;
+        }
+        setPhase('saving');
+        await saveProfile(profile);
+        summary = summarizeProfile(profile);
+        verdictWarnings = verdict.warnings;
+      }
 
       setPhase('analyzing');
       const result = await triggerAnalysis();
@@ -265,8 +296,8 @@ function App() {
       }
 
       setAnalysis(result);
-      setSavedSummary(summarizeProfile(profile));
-      setWarnings(verdict.warnings);
+      setSavedSummary(summary);
+      setWarnings(verdictWarnings);
       if (userRef.current) void writeSnapshot(userRef.current, result);
     } catch (err: unknown) {
       if (isApiError(err) && err.kind === 'unauthorized') {

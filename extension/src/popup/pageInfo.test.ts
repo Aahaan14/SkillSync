@@ -7,6 +7,9 @@ describe('classifyPage', () => {
     ['https://www.linkedin.com/in/jane-doe/', 'linkedin-profile'],
     ['https://linkedin.com/in/jane', 'linkedin-profile'],
     ['https://in.linkedin.com/in/jane', 'linkedin-profile'],
+    ['https://www.linkedin.com/in/jane/details/skills/', 'linkedin-skills'],
+    ['https://www.linkedin.com/in/jane/details/skills', 'linkedin-skills'],
+    ['https://www.linkedin.com/in/jane/details/experience/', 'linkedin-profile'],
     ['https://www.linkedin.com/feed/', 'linkedin-other'],
     ['https://www.linkedin.com/company/acme/', 'linkedin-other'],
     ['https://github.com/someone', 'other'],
@@ -24,6 +27,7 @@ describe('classifyPage', () => {
 
   it('routes content scripts the way the manifest does', () => {
     expect(contentScriptFor('https://www.linkedin.com/in/jane/')).toBe('content_linkedin.js');
+    expect(contentScriptFor('https://www.linkedin.com/in/jane/details/skills/')).toBe('content_linkedin.js');
     expect(contentScriptFor('https://github.com/jane')).toBe('content_generic.js');
     expect(contentScriptFor(undefined)).toBe('content_generic.js');
   });

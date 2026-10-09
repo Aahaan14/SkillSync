@@ -4,13 +4,21 @@
  * clear "can't read this page" on browser-internal pages.
  */
 
-export type PageKind = 'linkedin-profile' | 'linkedin-other' | 'other' | 'restricted';
+export type PageKind = 'linkedin-profile' | 'linkedin-skills' | 'linkedin-other' | 'other' | 'restricted';
 
 export interface PageInfo {
   kind: PageKind;
   /** Hostname for display, e.g. "www.linkedin.com". */
   host: string;
 }
+
+/**
+ * /in/<name>/details/skills/ ("Show all skills"). Deliberately NOT imported from
+ * content/linkedin/shared.ts: a module shared by the popup and a content script makes
+ * the bundler emit a shared chunk, and content scripts cannot use `import`.
+ * Keep in sync with isSkillsDetailsPath() in content/linkedin/shared.ts.
+ */
+const isSkillsDetailsPath = (pathname: string): boolean => /^\/in\/[^/]+\/details\/skills\/?$/i.test(pathname);
 
 const RESTRICTED_SCHEMES = /^(chrome|chrome-extension|chrome-untrusted|edge|about|view-source|devtools|moz-extension|brave):/i;
 
@@ -31,6 +39,7 @@ export function classifyPage(url: string | undefined): PageInfo {
 
   const isLinkedIn = host === 'linkedin.com' || host.endsWith('.linkedin.com');
   if (isLinkedIn) {
+    if (isSkillsDetailsPath(parsed.pathname)) return { kind: 'linkedin-skills', host };
     return { kind: parsed.pathname.startsWith('/in/') ? 'linkedin-profile' : 'linkedin-other', host };
   }
   return { kind: 'other', host };
@@ -38,5 +47,6 @@ export function classifyPage(url: string | undefined): PageInfo {
 
 /** Which content script answers EXTRACT_PROFILE for this URL (mirrors manifest content_scripts). */
 export function contentScriptFor(url: string | undefined): string {
-  return classifyPage(url).kind === 'linkedin-profile' ? 'content_linkedin.js' : 'content_generic.js';
+  const kind = classifyPage(url).kind;
+  return kind === 'linkedin-profile' || kind === 'linkedin-skills' ? 'content_linkedin.js' : 'content_generic.js';
 }

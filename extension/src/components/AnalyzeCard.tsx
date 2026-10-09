@@ -9,6 +9,8 @@ function describe(page: PageInfo): { title: string; pill: string; pillClass: str
   switch (page.kind) {
     case 'linkedin-profile':
       return { title: 'LinkedIn profile', pill: 'Ready', pillClass: 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/30', Icon: Linkedin };
+    case 'linkedin-skills':
+      return { title: 'LinkedIn · full skills list', pill: 'Ready', pillClass: 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/30', Icon: Linkedin };
     case 'linkedin-other':
       return { title: 'LinkedIn · not a profile page', pill: 'Open a profile', pillClass: 'bg-amber-500/15 text-amber-300 ring-amber-500/30', Icon: Linkedin };
     case 'restricted':
@@ -36,7 +38,8 @@ export const AnalyzeCard = ({
   onConfirmAnyway: () => void;
 }) => {
   const { title, pill, pillClass, Icon } = describe(page);
-  const ready = page.kind === 'linkedin-profile';
+  const skillsPage = page.kind === 'linkedin-skills';
+  const ready = page.kind === 'linkedin-profile' || skillsPage;
 
   return (
     <section aria-label="Analyze this page" className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
@@ -71,10 +74,12 @@ export const AnalyzeCard = ({
           <button type="button" onClick={onAnalyze} disabled={!ready || busy} className={primary}>
             <span className="inline-flex items-center justify-center gap-2">
               <ScanSearch className="h-4 w-4" />
-              {ready ? 'Analyze this profile' : 'Open a LinkedIn profile to analyze'}
+              {skillsPage ? 'Add skills from this page' : ready ? 'Analyze this profile' : 'Open a LinkedIn profile to analyze'}
             </span>
           </button>
-          {ready ? (
+          {skillsPage ? (
+            <p className="mt-2.5 text-center text-xs text-zinc-500">Scroll to the bottom first so every skill loads. Adds them to your saved profile and re-runs the analysis.</p>
+          ) : ready ? (
             <p className="mt-2.5 text-center text-xs text-zinc-500">Reads this page and saves it as your SkillSync profile.</p>
           ) : page.kind === 'other' ? (
             <button type="button" disabled={busy} onClick={onRequestAnyway} className="mt-2.5 block w-full text-center text-xs text-zinc-500 underline-offset-2 hover:text-zinc-300 hover:underline">

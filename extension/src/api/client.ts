@@ -2,6 +2,7 @@ import type { Profile } from '../types';
 import type { Analysis, AnalysisRequest, ApiProfile, User } from '../types/api';
 import { API_BASE_URL } from './config';
 import { ApiError, toApiError } from './errors';
+import { mergeSkills } from './mergeSkills';
 import { toProfilePayload } from './profilePayload';
 import { clearSession, getStoredAccessToken, setStoredAccessToken } from './session';
 
@@ -123,6 +124,32 @@ export function saveProfile(draft: Profile): Promise<ApiProfile> {
     method: 'PUT',
     body: JSON.stringify(toProfilePayload(draft)),
   });
+}
+
+/**
+ * The "Show all skills" page only has skills, so instead of replacing the saved
+ * profile, add them to it. Throws ApiError('not_found') if nothing is saved yet.
+ */
+export async function addSkillsToProfile(found: Array<{ name: string; endorsements?: number | null }>): Promise<{ added: number; total: number }> {
+  const saved = await getProfile();
+  const skills = mergeSkills(saved.skills ?? [], found);
+  await fetchClient<ApiProfile>('/profile', {
+    method: 'PUT',
+    body: JSON.stringify({
+      name: saved.name,
+      headline: saved.headline,
+      about: saved.about,
+      location: saved.location,
+      profile_url: saved.profile_url,
+      source: saved.source,
+      skills,
+      experience: saved.experience,
+      education: saved.education,
+      certifications: saved.certifications,
+      projects: saved.projects,
+    }),
+  });
+  return { added: skills.length - (saved.skills ?? []).length, total: skills.length };
 }
 
 // ─── Analysis ───

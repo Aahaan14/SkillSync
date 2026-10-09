@@ -29,6 +29,10 @@ export const SINGLE_YEAR = /^((?:19|20)\d{2})$/;
 export const SKILLS_LINE = /(\+\s*\d+\s+skills?\s*$)|(^skills:\s*)/i;
 export const NOISE_LINES = /^(show all|see more|…\s*see more|\.\.\.\s*see more|show credential|see credential|more|following|follow)$/i;
 
+/** True for LinkedIn's full skills list: /in/<name>/details/skills/ ("Show all skills"). */
+export const isSkillsDetailsPath = (pathname: string): boolean =>
+  /^\/in\/[^/]+\/details\/skills\/?$/i.test(pathname);
+
 // ─── text helpers ───
 
 export const clean = (value: string | null | undefined): string =>
