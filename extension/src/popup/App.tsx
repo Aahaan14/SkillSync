@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   errorMessage,
   getCurrentUser,
@@ -11,85 +11,181 @@ import {
   triggerAnalysis,
 } from '../api/client';
 import { WEB_APP_URL } from '../api/config';
-import type { Profile } from '../types';
-import type { Analysis, User } from '../types/api';
-import { Loading } from '../components/Loading';
+import { assessProfile, summarizeProfile } from '../api/profileQuality';
+import { clearSession, readStoredSession, writeSnapshot, type SnapshotUser } from '../api/session';
+import { AnalyzeCard } from '../components/AnalyzeCard';
+import { Banner, type BannerAction, type Tone } from '../components/Banner';
+import { EmptyState } from '../components/EmptyState';
+import { Header } from '../components/Header';
+import { Loading, ResultsSkeleton, type Phase } from '../components/Loading';
+import { LoginForm, type Credentials } from '../components/LoginForm';
 import { MatchScore } from '../components/MatchScore';
-import { SkillGap } from '../components/SkillGap';
-import { MarketSkills } from '../components/MarketSkills';
+import { ResultTabs } from '../components/ResultTabs';
+import { Sparkles } from '../components/icons';
+import type { ExtractionReport } from '../types';
+import type { Analysis, User } from '../types/api';
+import { extractFromTab } from './extract';
+import { formatRelative } from './format';
+import { classifyPage, type PageInfo } from './pageInfo';
 
-const SESSION_EXPIRED = 'Your session has expired. Please log in again.';
+const SESSION_EXPIRED = 'Your session has expired. Please sign in again.';
+
+interface Notice {
+  tone: Tone;
+  message: string;
+  action?: BannerAction;
+}
+
+type View = 'loading' | 'login' | 'home';
 
 /** Never keep the bearer token in React state; it lives in chrome.storage only. */
-function withoutToken(user: User): User {
-  return { ...user, access_token: null };
+const toSnapshotUser = (user: User | SnapshotUser): SnapshotUser => ({
+  id: user.id,
+  email: user.email,
+  full_name: user.full_name,
+  role: user.role,
+});
+
+async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    return tab;
+  } catch {
+    return undefined;
+  }
 }
 
 function App() {
-  const [user, setUser] = useState<User | null>(null);
-  const [isCheckingAuth, setIsCheckingAuth] = useState(true);
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [fullName, setFullName] = useState('');
-  const [isRegister, setIsRegister] = useState(false);
-  const [error, setError] = useState('');
-  
+  const [view, setView] = useState<View>('loading');
+  const [user, setUser] = useState<SnapshotUser | null>(null);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
-  const [loadingMsg, setLoadingMsg] = useState('');
+  const [syncing, setSyncing] = useState(false);
+  const [page, setPage] = useState<PageInfo>({ kind: 'restricted', host: '' });
 
-  /** Any 401 from an authenticated call means the stored token is no longer valid. */
-  const handleApiFailure = useCallback((err: unknown, fallback: string) => {
-    if (isApiError(err) && err.kind === 'unauthorized') {
-      setUser(null);
-      setAnalysis(null);
-      setError(SESSION_EXPIRED);
-      return;
-    }
-    setError(errorMessage(err, fallback));
+  const [phase, setPhase] = useState<Phase | null>(null);
+  const [confirmAnyway, setConfirmAnyway] = useState(false);
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const [savedSummary, setSavedSummary] = useState<string | null>(null);
+
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  // The latest values, readable from async callbacks without stale closures.
+  const analysisRef = useRef<Analysis | null>(null);
+  const userRef = useRef<SnapshotUser | null>(null);
+  useEffect(() => {
+    analysisRef.current = analysis;
+    userRef.current = user;
+  }, [analysis, user]);
+
+  const busy = phase !== null;
+
+  /** Back to the sign-in screen, forgetting the token and cached data. */
+  const expireSession = useCallback(async (message: string = SESSION_EXPIRED) => {
+    await clearSession();
+    setUser(null);
+    setAnalysis(null);
+    setNotice(null);
+    setWarnings([]);
+    setAuthError(message);
+    setView('login');
   }, []);
 
-  // Check auth on load. /auth/me is the authoritative "who am I".
-  useEffect(() => {
-    getCurrentUser()
-      .then(u => setUser(withoutToken(u)))
-      .catch((err: unknown) => {
-        setUser(null);
-        // "Not signed in" is the normal logged-out state; anything else is worth showing.
-        if (!(isApiError(err) && err.kind === 'unauthorized')) {
-          setError(errorMessage(err, 'Could not reach SkillSync.'));
-        }
-      })
-      .finally(() => setIsCheckingAuth(false));
-  }, []);
+  /**
+   * Refresh the user and the latest analysis IN PARALLEL (they do not depend on
+   * each other), keeping whatever is already on screen until the answers arrive.
+   */
+  const revalidate = useCallback(
+    async (hadCache: boolean) => {
+      setSyncing(true);
+      const [me, latest] = await Promise.allSettled([getCurrentUser(), getLatestAnalysis()]);
+      setSyncing(false);
 
-  // Fetch the latest analysis when the signed-in user changes.
-  useEffect(() => {
-    if (!user) return;
-    getLatestAnalysis()
-      .then(data => setAnalysis(data))
-      .catch((err: unknown) => {
-        setAnalysis(null);
-        // 404 simply means "no analysis yet"; every other failure is real.
-        if (!(isApiError(err) && err.kind === 'not_found')) {
-          handleApiFailure(err, 'Could not load your latest analysis.');
-        }
-      });
-  }, [user, handleApiFailure]);
+      const unauthorized = (r: PromiseSettledResult<unknown>) =>
+        r.status === 'rejected' && isApiError(r.reason) && r.reason.kind === 'unauthorized';
+      if (unauthorized(me) || unauthorized(latest)) {
+        await expireSession();
+        return;
+      }
 
-  const handleAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setLoadingMsg(isRegister ? 'Creating account...' : 'Logging in...');
+      if (me.status === 'rejected') {
+        setNotice({
+          tone: hadCache ? 'info' : 'error',
+          message: hadCache
+            ? `${errorMessage(me.reason, 'Offline.')} Showing your last saved results.`
+            : errorMessage(me.reason, 'Could not reach SkillSync.'),
+          // Reloading the popup re-runs the whole startup (storage -> parallel revalidate).
+          action: { label: 'Try again', onClick: () => window.location.reload() },
+        });
+        return;
+      }
+
+      const nextUser = toSnapshotUser(me.value);
+      let nextAnalysis = analysisRef.current;
+      if (latest.status === 'fulfilled') {
+        nextAnalysis = latest.value;
+      } else if (isApiError(latest.reason) && latest.reason.kind === 'not_found') {
+        nextAnalysis = null; // never analysed yet
+      } else {
+        setNotice({ tone: 'warning', message: errorMessage(latest.reason, 'Could not refresh your latest analysis.') });
+      }
+
+      setUser(nextUser);
+      setAnalysis(nextAnalysis);
+      void writeSnapshot(nextUser, nextAnalysis);
+    },
+    [expireSession],
+  );
+
+  // First paint depends only on local storage + the active tab: no network wait.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const [session, tab] = await Promise.all([readStoredSession(), getActiveTab()]);
+      if (cancelled) return;
+      setPage(classifyPage(tab?.url));
+
+      if (!session.token) {
+        setView('login'); // logged out: zero network calls
+        return;
+      }
+      if (session.snapshot) {
+        setUser(session.snapshot.user);
+        setAnalysis(session.snapshot.analysis);
+      }
+      setView('home');
+      await revalidate(!!session.snapshot);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [revalidate]);
+
+  // ─── auth ───
+
+  const handleAuth = async (mode: 'login' | 'register', credentials: Credentials) => {
+    setAuthBusy(true);
+    setAuthError('');
+    setFieldErrors({});
     try {
-      const u = isRegister
-        ? await register(email, password, fullName)
-        : await login(email, password);
-      setUser(withoutToken(u));
-      setPassword('');
+      const signedIn =
+        mode === 'register'
+          ? await register(credentials.email, credentials.password, credentials.fullName)
+          : await login(credentials.email, credentials.password);
+      const snapshotUser = toSnapshotUser(signedIn);
+      setUser(snapshotUser);
+      setAnalysis(null);
+      setNotice(null);
+      setView('home');
+      void writeSnapshot(snapshotUser, null);
+      void revalidate(false);
     } catch (err: unknown) {
-      setError(errorMessage(err, isRegister ? 'Registration failed' : 'Login failed'));
+      setAuthError(errorMessage(err, mode === 'register' ? 'Registration failed.' : 'Sign-in failed.'));
+      if (isApiError(err)) setFieldErrors(err.fieldErrors);
     } finally {
-      setLoadingMsg('');
+      setAuthBusy(false);
     }
   };
 
@@ -97,181 +193,201 @@ function App() {
     try {
       await logout();
     } catch {
-      // The local token is cleared regardless; the server cookie expires on its own.
-    } finally {
-      setUser(null);
-      setAnalysis(null);
+      // The local token and cache are cleared regardless; the server cookie expires on its own.
+    }
+    setUser(null);
+    setAnalysis(null);
+    setNotice(null);
+    setWarnings([]);
+    setAuthError('');
+    setView('login');
+  };
+
+  // ─── analysis ───
+
+  const copyDetails = (report: ExtractionReport) => async () => {
+    let version = 'unknown';
+    try {
+      version = chrome.runtime.getManifest().version;
+    } catch {
+      // Not available outside the extension runtime.
+    }
+    const details = JSON.stringify({ extensionVersion: version, page: page.kind, report }, null, 2);
+    try {
+      await navigator.clipboard.writeText(details);
+      setNotice({ tone: 'success', message: 'Diagnostic details copied. They list section names and counts only, not your profile text.' });
+    } catch {
+      setNotice({ tone: 'warning', message: 'Could not copy automatically. Please try again.' });
     }
   };
 
-  const handleExtractAndAnalyze = async () => {
-    setError('');
-    setLoadingMsg('Extracting profile data...');
+  const runAnalysis = async () => {
+    setNotice(null);
+    setWarnings([]);
+    setSavedSummary(null);
+    setConfirmAnyway(false);
+    setPhase('extracting');
 
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab?.id) {
-        throw new Error('No active tab found. Open a profile page and try again.');
+      const tab = await getActiveTab();
+      if (!tab) throw new Error('No active tab found. Open a profile page and try again.');
+      setPage(classifyPage(tab.url));
+
+      const extraction = await extractFromTab(tab);
+      if (!extraction.success) throw new Error(extraction.error);
+      const { profile, report } = extraction;
+
+      // Do not replace the saved profile with something the backend cannot analyse.
+      const verdict = assessProfile(profile, report);
+      if (!verdict.canAnalyze) {
+        setNotice({
+          tone: 'error',
+          message: verdict.blockingReason ?? "Couldn't read this page.",
+          action: { label: 'Copy diagnostic details', onClick: () => void copyDetails(report)() },
+        });
+        return;
       }
 
-      let response: { success?: boolean; profile?: Profile; error?: string } | undefined;
-      try {
-        response = await chrome.tabs.sendMessage(tab.id, { action: 'EXTRACT_PROFILE' });
-      } catch {
-        throw new Error('Could not connect to page. Make sure you are on a profile page and refresh it.');
-      }
-      if (!response?.success || !response.profile) {
-        throw new Error(response?.error || 'Failed to extract profile.');
-      }
+      setPhase('saving');
+      await saveProfile(profile);
 
-      setLoadingMsg('Saving profile...');
-      await saveProfile(response.profile);
-
-      setLoadingMsg('Analyzing market data... This may take a minute.');
+      setPhase('analyzing');
       const result = await triggerAnalysis();
 
       // POST /analysis answers 201 even when the run failed; check the status.
       if (result.status === 'failed') {
-        setError(result.error_message || 'The analysis could not be completed. Please try again.');
-      } else if (result.status !== 'completed') {
-        setError('The analysis is still running. Re-open the popup in a moment.');
-      } else {
-        setAnalysis(result);
+        setNotice({ tone: 'error', message: result.error_message || 'The analysis could not be completed. Please try again.' });
+        return;
       }
+      if (result.status !== 'completed') {
+        setNotice({ tone: 'info', message: 'The analysis is still running. Re-open the popup in a moment.' });
+        return;
+      }
+
+      setAnalysis(result);
+      setSavedSummary(summarizeProfile(profile));
+      setWarnings(verdict.warnings);
+      if (userRef.current) void writeSnapshot(userRef.current, result);
     } catch (err: unknown) {
-      handleApiFailure(err, 'Analysis failed');
+      if (isApiError(err) && err.kind === 'unauthorized') {
+        await expireSession();
+      } else {
+        setNotice({
+          tone: 'error',
+          message: errorMessage(err, 'Analysis failed.'),
+          action: { label: 'Try again', onClick: () => void runAnalysis() },
+        });
+      }
     } finally {
-      setLoadingMsg('');
+      setPhase(null);
     }
   };
 
-  if (isCheckingAuth) return <Loading message="Starting Copilot..." />;
-  if (loadingMsg) return <Loading message={loadingMsg} />;
+  // ─── render ───
 
-  // Login Screen
-  if (!user) {
+  if (view === 'loading') {
+    return <div className="h-[600px] w-[420px] bg-zinc-950" aria-busy="true" />;
+  }
+
+  if (view === 'login') {
     return (
-      <div className="flex flex-col items-center justify-center h-full p-6 bg-white">
-        <h1 className="text-2xl font-bold text-brand-600 mb-2">SkillSync</h1>
-        <p className="text-sm text-gray-500 mb-8 text-center">Your Career Intelligence Copilot</p>
-        
-        <form onSubmit={handleAuth} className="w-full space-y-4">
-          {isRegister && (
-            <div>
-              <input
-                type="text"
-                required
-                placeholder="Full name"
-                className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 text-sm"
-                value={fullName}
-                onChange={e => setFullName(e.target.value)}
-              />
-            </div>
-          )}
-          <div>
-            <input
-              type="email"
-              required
-              placeholder="Email"
-              className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 text-sm"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-            />
-          </div>
-          <div>
-            <input
-              type="password"
-              required
-              placeholder={isRegister ? 'Password (8+ chars, upper, lower, digit)' : 'Password'}
-              className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 text-sm"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-            />
-          </div>
-          {error && <p className="text-xs text-red-500 text-center">{error}</p>}
-          <button
-            type="submit"
-            className="w-full py-2 bg-brand-600 text-white rounded-lg font-medium text-sm hover:bg-brand-700 transition-colors"
-          >
-            {isRegister ? 'Create account' : 'Log In'}
-          </button>
-          <button
-            type="button"
-            onClick={() => { setIsRegister(!isRegister); setError(''); }}
-            className="w-full text-xs text-gray-500 hover:text-brand-600"
-          >
-            {isRegister ? 'Already have an account? Log in' : 'Need an account? Register'}
-          </button>
-        </form>
+      <div className="flex h-[600px] w-[420px] flex-col bg-zinc-950">
+        <LoginForm busy={authBusy} error={authError} fieldErrors={fieldErrors} onSubmit={handleAuth} />
       </div>
     );
   }
 
-  // Dashboard Screen
+  const completed = analysis?.status === 'completed' ? analysis : null;
+  const hasMarketData = !!completed && completed.jobs_analyzed_count > 0;
+
   return (
-    <div className="flex flex-col h-full bg-gray-50">
-      {/* Header */}
-      <div className="flex items-center justify-between p-4 bg-white border-b border-gray-100">
-        <h1 className="text-lg font-bold text-gray-900">SkillSync</h1>
-        <div className="flex items-center gap-2">
-          <button 
-            onClick={handleExtractAndAnalyze}
-            className="px-3 py-1.5 bg-brand-600 text-white text-xs font-medium rounded hover:bg-brand-700 transition-colors"
-          >
-            Analyze Current Page
-          </button>
-          <button
-            onClick={handleLogout}
-            className="px-2 py-1.5 text-xs text-gray-500 hover:text-gray-800"
-          >
-            Log out
-          </button>
-        </div>
-      </div>
+    <div className="flex h-[600px] w-[420px] flex-col bg-zinc-950">
+      <Header user={user} dashboardUrl={WEB_APP_URL} onLogout={handleLogout} />
 
-      {error && (
-        <div className="p-3 m-4 text-xs text-red-700 bg-red-50 rounded-lg border border-red-100">
-          {error}
-        </div>
-      )}
-
-      {/* Main Content */}
-      <div className="flex-1 overflow-y-auto">
-        {analysis?.status === 'completed' ? (
-          analysis.jobs_analyzed_count === 0 ? (
-            <div className="p-8 text-center text-sm text-gray-500">
-              The last analysis found no job listings, so there is no market data to compare against.
-              Try again later or from the web dashboard with a target role.
-            </div>
-          ) : (
-            <>
-              <MatchScore
-                score={analysis.overall_alignment_score}
-                jobsAnalyzed={analysis.jobs_analyzed_count}
-              />
-              <SkillGap strengths={analysis.strengths ?? []} gaps={analysis.skill_gaps ?? []} />
-              <MarketSkills marketSkills={analysis.market_skills ?? {}} />
-            </>
-          )
-        ) : analysis ? (
-          <div className="p-8 text-center text-sm text-gray-500">
-            {analysis.status === 'failed'
-              ? analysis.error_message || 'Your last analysis failed. Try analyzing again.'
-              : 'An analysis is still in progress. Re-open the popup in a moment.'}
-          </div>
-        ) : (
-          <div className="flex flex-col items-center justify-center h-full p-8 text-center text-gray-500">
-            <svg className="w-12 h-12 text-gray-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-            <p className="text-sm">Navigate to a professional profile and click <strong>Analyze Current Page</strong> to get started.</p>
-          </div>
+      <main className="flex-1 space-y-3 overflow-y-auto px-4 py-3">
+        {notice && (
+          <Banner tone={notice.tone} action={notice.action} onDismiss={() => setNotice(null)}>
+            {notice.message}
+          </Banner>
         )}
 
-        <div className="p-4 bg-white mt-2 mb-4 text-center">
-          <a href={WEB_APP_URL} target="_blank" rel="noreferrer" className="text-sm font-medium text-brand-600 hover:text-brand-700 underline">
-            View Full Web Dashboard ↗
-          </a>
-        </div>
-      </div>
+        <AnalyzeCard
+          page={page}
+          busy={busy}
+          confirming={confirmAnyway}
+          onAnalyze={() => void runAnalysis()}
+          onRequestAnyway={() => setConfirmAnyway(true)}
+          onCancelAnyway={() => setConfirmAnyway(false)}
+          onConfirmAnyway={() => void runAnalysis()}
+        />
+
+        {phase ? (
+          <Loading phase={phase} />
+        ) : (
+          <>
+            {savedSummary && (
+              <Banner tone="success" onDismiss={() => setSavedSummary(null)}>
+                Profile saved: {savedSummary}
+              </Banner>
+            )}
+            {warnings.length > 0 && (
+              <Banner
+                tone="warning"
+                onDismiss={() => setWarnings([])}
+                action={{ label: 'Open Profile page', onClick: () => window.open(`${WEB_APP_URL}/profile`, '_blank', 'noreferrer') }}
+              >
+                {warnings[0]}
+              </Banner>
+            )}
+
+            {completed && hasMarketData ? (
+              <>
+                <MatchScore
+                  score={completed.overall_alignment_score}
+                  jobsAnalyzed={completed.jobs_analyzed_count}
+                  matched={(completed.strengths ?? []).length}
+                  marketSkills={Object.keys(completed.market_skills ?? {}).length}
+                  gaps={(completed.skill_gaps ?? []).length}
+                />
+                <ResultTabs analysis={completed} />
+                {completed.ai_summary && (
+                  <section aria-label="AI insights" className="animate-fade-up rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
+                    <div className="mb-2 flex items-center gap-2">
+                      <Sparkles className="h-4 w-4 text-brand-400" />
+                      <h2 className="text-sm font-semibold text-zinc-100">AI insights</h2>
+                      <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] font-medium text-zinc-400">AI-generated</span>
+                    </div>
+                    <p className="text-[13px] leading-relaxed text-zinc-300">{completed.ai_summary}</p>
+                  </section>
+                )}
+              </>
+            ) : completed ? (
+              <p className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5 text-center text-sm leading-snug text-zinc-400">
+                The last analysis found no job listings, so there is nothing to compare against yet. Try again in a moment.
+              </p>
+            ) : analysis?.status === 'failed' ? (
+              <Banner tone="error">
+                Your last analysis failed: {analysis.error_message || 'please try again.'}
+              </Banner>
+            ) : analysis ? (
+              <Banner tone="info">An analysis is still in progress. Re-open the popup in a moment.</Banner>
+            ) : syncing ? (
+              <ResultsSkeleton />
+            ) : (
+              <EmptyState />
+            )}
+          </>
+        )}
+      </main>
+
+      <footer className="flex h-11 shrink-0 items-center justify-between border-t border-zinc-800/80 px-4 text-xs text-zinc-500">
+        <span aria-live="polite">
+          {syncing ? 'Updating…' : analysis ? `Analyzed ${formatRelative(analysis.created_at)}` : 'Not analyzed yet'}
+        </span>
+        <a href={WEB_APP_URL} target="_blank" rel="noreferrer" className="font-medium text-brand-400 hover:text-brand-300">
+          Open full dashboard ↗
+        </a>
+      </footer>
     </div>
   );
 }

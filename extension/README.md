@@ -16,6 +16,42 @@ If the API origin is not localhost, also add it to `host_permissions` in
 `public/manifest.json`. These values are bundled into the extension and are
 public: never put provider keys or secrets in them.
 
+## Development
+
+```
+npm install
+npm run build     # type-checks, then builds dist/ (load it at chrome://extensions)
+npm run lint
+npm test          # parser, popup behaviour and page-detection tests
+```
+
+## How profile reading works
+
+* **LinkedIn profiles** (`linkedin.com/in/...`) are read by `src/content/linkedin/parse.ts`,
+  with two strategies. The *structural* one finds sections by their heading ("Experience",
+  "Education", ...) and reads LinkedIn's screen-reader-duplicated `aria-hidden` lines. If the
+  page has no such markup, the *text* strategy (`lines.ts`, `textParse.ts`) reads only the
+  visible lines of text, finds section titles as standalone lines, and locates each entry by
+  its date range (or its "Issued ..." line). Neither uses CSS class names, which LinkedIn
+  renames often. The diagnostic report says which strategy supplied the data. It is unit-tested against synthetic pages that reproduce this
+  structure. **It cannot be verified against the live site from CI**, so if LinkedIn changes
+  its markup and a section stops being read, the popup says so ("Copy diagnostic details"
+  lists which sections were found, counts only, no profile text).
+* LinkedIn shows most skills on a separate "Show all skills" page. Skills are collected from
+  the Skills section and from skills named on experience entries; a profile with few of
+  either will have a short skills list. Add the rest on the dashboard Profile page.
+* **Other websites** only capture the page title and text (no skills), and replace your saved
+  profile, so the popup asks for explicit confirmation first.
+* A profile with neither a headline nor a job title is never saved, because the backend
+  cannot build job searches from it.
+
+## Startup speed
+
+The popup paints from a local snapshot of your last result (`chrome.storage.local`, no token
+inside) and revalidates `/auth/me` and `/analysis/latest` in parallel in the background. When
+logged out it makes no network calls at all. The snapshot and token are cleared on logout and
+on any 401.
+
 ## API contract
 
 See `docs/api-contract.md`. Response types live in `src/types/api.ts`

@@ -1,4 +1,4 @@
-import { Profile, ProfileExtractor } from '../../types';
+import type { ExtractionReport, ExtractionResponse, Profile, ProfileExtractor } from '../../types';
 
 class GenericExtractor implements ProfileExtractor {
   async extractProfile(): Promise<Profile> {
@@ -35,14 +35,29 @@ class GenericExtractor implements ProfileExtractor {
 }
 
 // Listen for messages from the popup/background script to trigger extraction
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === 'EXTRACT_PROFILE') {
-    const extractor = new GenericExtractor();
-    extractor.extractProfile().then(profile => {
-      sendResponse({ success: true, profile });
-    }).catch(error => {
-      sendResponse({ success: false, error: error.message });
+chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+  if (request?.action !== 'EXTRACT_PROFILE') return undefined;
+
+  new GenericExtractor()
+    .extractProfile()
+    .then((profile) => {
+      const report: ExtractionReport = {
+        source: 'generic',
+        found: { name: !!profile.name, headline: false, location: false, about: !!profile.about },
+        counts: { skills: 0, experience: 0, education: 0, certifications: 0, projects: 0 },
+        sections: [],
+        otherHeadings: [],
+        warnings: ['This is not a LinkedIn profile. Only the page title and text were captured; no skills were detected.'],
+      };
+      const response: ExtractionResponse = { success: true, profile, report };
+      sendResponse(response);
+    })
+    .catch((error: unknown) => {
+      const response: ExtractionResponse = {
+        success: false,
+        error: error instanceof Error ? error.message : 'Could not read this page.',
+      };
+      sendResponse(response);
     });
-    return true; // Keep the message channel open for async response
-  }
+  return true; // Keep the message channel open for the async response
 });

@@ -1,60 +1,55 @@
 import type { Profile } from '../types';
 import type { Analysis, AnalysisRequest, ApiProfile, User } from '../types/api';
-import { ACCESS_TOKEN_STORAGE_KEY, API_BASE_URL } from './config';
+import { API_BASE_URL } from './config';
 import { ApiError, toApiError } from './errors';
 import { toProfilePayload } from './profilePayload';
+import { clearSession, getStoredAccessToken, setStoredAccessToken } from './session';
 
 export { ApiError, isApiError, errorMessage } from './errors';
 export type { ApiErrorKind } from './errors';
-
-// ─── Token storage ───
-// HTTP-only cookies are not sent from chrome-extension:// pages to the backend,
-// so the extension authenticates with `Authorization: Bearer <access_token>`.
-// The backend is the only party that ever issues or validates this token.
-
-async function getStoredAccessToken(): Promise<string | null> {
-  try {
-    const stored = await chrome.storage.local.get(ACCESS_TOKEN_STORAGE_KEY);
-    const token = stored[ACCESS_TOKEN_STORAGE_KEY];
-    return typeof token === 'string' && token ? token : null;
-  } catch {
-    return null;
-  }
-}
-
-async function setStoredAccessToken(token: string | null): Promise<void> {
-  try {
-    if (token) {
-      await chrome.storage.local.set({ [ACCESS_TOKEN_STORAGE_KEY]: token });
-    } else {
-      await chrome.storage.local.remove(ACCESS_TOKEN_STORAGE_KEY);
-    }
-  } catch {
-    // Storage unavailable: nothing to persist or clear.
-  }
-}
 
 // ─── Transport ───
 
 /** Endpoints where a 401 means "bad credentials", not "your session expired". */
 const CREDENTIAL_ENDPOINTS = new Set(['/auth/login', '/auth/register', '/auth/logout']);
 
-async function fetchClient<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  const headers = new Headers(options.headers);
-  if (options.body !== undefined) headers.set('Content-Type', 'application/json');
+/** Quick calls fail fast so the popup never hangs; the analysis run gets far longer. */
+const DEFAULT_TIMEOUT_MS = 10_000;
+const ANALYSIS_TIMEOUT_MS = 180_000;
+
+interface RequestOptions extends RequestInit {
+  timeoutMs?: number;
+}
+
+async function fetchClient<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, ...init } = options;
+  const headers = new Headers(init.headers);
+  if (init.body !== undefined) headers.set('Content-Type', 'application/json');
 
   const token = await getStoredAccessToken();
   if (token) headers.set('Authorization', `Bearer ${token}`);
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
   let response: Response;
   try {
-    response = await fetch(`${API_BASE_URL}${endpoint}`, { ...options, headers, credentials: 'include' });
+    response = await fetch(`${API_BASE_URL}${endpoint}`, {
+      ...init,
+      headers,
+      credentials: 'include',
+      signal: controller.signal,
+    });
   } catch {
     throw new ApiError(
       'network',
       0,
-      'Cannot reach the SkillSync server. Check that it is running and try again.',
+      controller.signal.aborted
+        ? 'The SkillSync server took too long to respond. Please try again.'
+        : 'Cannot reach the SkillSync server. Check that it is running and try again.',
     );
+  } finally {
+    clearTimeout(timer);
   }
 
   if (!response.ok) {
@@ -62,7 +57,7 @@ async function fetchClient<T>(endpoint: string, options: RequestInit = {}): Prom
     // The backend rejected our token: drop it so the UI returns to the login
     // screen instead of failing every later request with the same 401.
     if (error.kind === 'unauthorized' && !CREDENTIAL_ENDPOINTS.has(endpoint)) {
-      await setStoredAccessToken(null);
+      await clearSession();
     }
     throw error;
   }
@@ -98,7 +93,7 @@ export async function login(email: string, password: string): Promise<User> {
 export async function register(email: string, password: string, fullName: string): Promise<User> {
   const user = await fetchClient<User>('/auth/register', {
     method: 'POST',
-    body: JSON.stringify({ email, password, full_name: fullName }),
+    body: JSON.stringify({ email, password, full_name: fullName.trim() || undefined }),
   });
   return startSession(user);
 }
@@ -107,7 +102,7 @@ export async function logout(): Promise<void> {
   try {
     await fetchClient<unknown>('/auth/logout', { method: 'POST' });
   } finally {
-    await setStoredAccessToken(null);
+    await clearSession();
   }
 }
 
@@ -141,7 +136,11 @@ export function triggerAnalysis(
   targetLocations: string[] = [],
 ): Promise<Analysis> {
   const body: AnalysisRequest = { target_roles: targetRoles, target_locations: targetLocations };
-  return fetchClient<Analysis>('/analysis', { method: 'POST', body: JSON.stringify(body) });
+  return fetchClient<Analysis>('/analysis', {
+    method: 'POST',
+    body: JSON.stringify(body),
+    timeoutMs: ANALYSIS_TIMEOUT_MS,
+  });
 }
 
 /** Rejects with ApiError('not_found') when the user has never run an analysis. */

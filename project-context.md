@@ -976,7 +976,7 @@ Phase 9 is complete only when:
 
 ## Status
 
-**IN PROGRESS**
+**COMPLETED**
 
 ## Objective
 
@@ -1020,7 +1020,7 @@ The extension and web dashboard should interpret backend responses consistently.
 
 ## Status
 
-**PLANNED**
+**IN PROGRESS**
 
 ## Areas to audit
 
