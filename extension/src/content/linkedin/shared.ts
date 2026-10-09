@@ -7,12 +7,16 @@ import type { SkillItem } from '../../types';
 
 export type SectionKind = 'about' | 'experience' | 'education' | 'skills' | 'certifications' | 'projects';
 
+/**
+ * Section titles are matched on the visible wording after a trailing count such as
+ * "(23)" or an arrow has been removed ("Skills (23)" -> "Skills").
+ */
 export const SECTION_HEADINGS: Array<[SectionKind, RegExp]> = [
   ['about', /^about$/i],
   ['experience', /^experience$/i],
   ['education', /^education$/i],
   ['skills', /^(top )?skills$/i],
-  ['certifications', /^licen[sc]es\s*(&|and)\s*certifications?/i],
+  ['certifications', /^(licen[sc]es\s*(&|and)\s*)?certifications?$|^licen[sc]es\s*(&|and)\s*certifications?\b|^licen[sc]es$/i],
   ['projects', /^projects$/i],
 ];
 
@@ -31,11 +35,35 @@ export const clean = (value: string | null | undefined): string =>
   (value ?? '').replace(/\s+/g, ' ').trim();
 
 
+/** "Skills (23)" -> "Skills", "Show all →" -> "Show all". */
+export function stripCount(line: string): string {
+  return line.replace(/\s*\(\d+\)\s*$/, '').replace(/\s*[↗→]\s*$/, '').trim();
+}
+
+/** "Skills (23)" -> 23 (the number LinkedIn prints after a section title), else undefined. */
+export function headingCount(line: string): number | undefined {
+  const match = /\((\d+)\)\s*$/.exec(clean(line));
+  return match ? Number(match[1]) : undefined;
+}
+
 export function kindOf(text: string): SectionKind | null {
+  const title = stripCount(clean(text));
   for (const [kind, pattern] of SECTION_HEADINGS) {
-    if (pattern.test(text)) return kind;
+    if (pattern.test(title)) return kind;
   }
   return null;
+}
+
+/** "Credential ID ABC-123" -> "ABC-123". */
+export function credentialId(line: string): string | undefined {
+  const match = /^credential id\s*:?\s*(.+)$/i.exec(clean(line));
+  return match ? clean(match[1]).slice(0, 200) : undefined;
+}
+
+/** Only http(s) URLs are ever kept. */
+export function httpUrl(value: string | null | undefined): string | undefined {
+  const candidate = clean(value);
+  return /^https?:\/\//i.test(candidate) && candidate.length <= 2048 ? candidate : undefined;
 }
 
 

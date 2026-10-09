@@ -152,3 +152,92 @@ export const TEXT_ONLY_PAGE = `<!doctype html><html><head><title>(1) Sam Rivera 
   </div>
   <div class="_side">${p('People also viewed')}${p('Pat Lee')}${p('Experience Designer at Acme')}${p('Mar 2021 - Present')}</div>
 </body></html>`;
+
+/**
+ * Layout that matches the failure reported from a real page: the name is a
+ * heading (no <h1>), "Skills (23)" carries a count, entries are plain divs (no
+ * <li>), skills are mostly on a separate page, and there are sidebar headings that
+ * are not profile data. Fictional person.
+ */
+const d = (...lines: string[]): string => `<div class="_entry">${lines.map((l) => `<p>${l}</p>`).join('')}</div>`;
+const h = (text: string): string => `<h2 class="_t">${text}</h2>`;
+
+export const SDUI_PAGE = `<!doctype html><html><head><title>(4) Riya Shah | LinkedIn</title></head><body>
+  <header><nav><h2>Navigation</h2><p>Home</p><p>My Network</p></nav></header>
+  <main>
+    <section class="_top">
+      <div><h2 class="_name">Riya Shah</h2><p>· 2nd</p></div>
+      <p>Data Analyst | SQL, Python and dashboards</p>
+      <p>Mumbai, Maharashtra, India · <a href="/in/riya/overlay/contact-info/">Contact info</a></p>
+      <p>312 connections</p>
+    </section>
+    <section>${h('About')}<div><p>I turn messy operational data into dashboards people actually use.</p><button>…see more</button></div></section>
+    <section>${h('Activity')}<p>312 followers</p><p>Riya has not posted yet</p></section>
+    <section>${h('Experience')}
+      ${d('Data Analyst', 'Orbit Retail · Full-time', 'Mar 2024 - Present · 1 yr 7 mos', 'Mumbai, Maharashtra, India · Hybrid', 'Built weekly sales dashboards and automated the reporting pipeline for four regional teams.', 'SQL, Power BI and +2 skills')}
+      ${d('Analytics Intern', 'Orbit Retail · Internship', 'Jun 2023 - Feb 2024 · 9 mos', 'Cleaned and joined store-level datasets for the finance team.')}
+      ${d('Freelance Researcher', 'Self-employed', '2022 - 2023')}
+    </section>
+    <section>${h('Education')}
+      ${d('University of Mumbai', 'Bachelor of Science - BSc, Statistics', '2019 – 2022')}
+      ${d('St. Xavier’s College', '2017 – 2019')}
+    </section>
+    <section>${h('Licenses &amp; certifications')}
+      ${d('Google Data Analytics Professional Certificate', 'Coursera', 'Issued Jan 2024', 'Credential ID ABC123XYZ', '<a href="https://www.coursera.org/verify/ABC123XYZ">Show credential</a>')}
+      ${d('SQL Fundamentals', 'DataCamp', 'Issued Aug 2023')}
+    </section>
+    <section>${h('Skills (23)')}
+      ${d('SQL', '4 endorsements')}
+      ${d('Power BI')}
+      <a href="/in/riya/details/skills/">Show all 23 skills</a>
+    </section>
+    <section>${h('Interests')}<p>Top Voices</p></section>
+    <aside>
+      ${h('People you may know')}${d('Aman Verma', 'Experience Designer at Acme', 'Mar 2021 - Present')}
+      ${h('Explore Premium profiles')}${h('Ad Options')}${h("Don't want to see this")}${h('You might like')}
+    </aside>
+  </main>
+</body></html>`;
+
+/** Top card and About have rendered; everything below is still a loading placeholder. */
+export const PARTIAL_LOAD_PAGE = `<!doctype html><html><head><title>Riya Shah | LinkedIn</title></head><body><main>
+  <section><div><h2>Riya Shah</h2></div><p>Data Analyst | SQL, Python and dashboards</p><p>Mumbai, Maharashtra, India</p></section>
+  <section>${h('About')}<div><p>I turn messy operational data into dashboards people actually use.</p></div></section>
+  <section aria-busy="true"><div class="artdeco-loader"></div><div class="skeleton-block"></div></section>
+</main></body></html>`;
+
+/** Sections whose headings rendered but whose entries did not (or the person has none). */
+export const EMPTY_SECTIONS_PAGE = `<!doctype html><html><head><title>Riya Shah | LinkedIn</title></head><body><main>
+  <section><div><h2>Riya Shah</h2></div><p>Data Analyst | SQL, Python and dashboards</p><p>Mumbai, Maharashtra, India</p></section>
+  <section>${h('About')}<div><p>Short bio.</p></div></section>
+  <section>${h('Experience')}</section>
+  <section>${h('Education')}</section>
+</main></body></html>`;
+
+/** A finished page of a person who has only About and Education. */
+export const MINIMAL_COMPLETE_PAGE = `<!doctype html><html><head><title>Riya Shah | LinkedIn</title></head><body><main>
+  <section><div><h2>Riya Shah</h2></div><p>Data Analyst | SQL, Python and dashboards</p><p>Mumbai, Maharashtra, India</p></section>
+  <section>${h('About')}<div><p>Short bio.</p></div></section>
+  <section>${h('Education')}${d('University of Mumbai', 'Bachelor of Science - BSc, Statistics', '2019 – 2022')}</section>
+</main></body></html>`;
+
+/**
+ * LinkedIn wraps sections in `display: contents` elements (no box of their own). The
+ * top card is inside one, and a stale headline sits in a display:none copy. Fictional person.
+ */
+export const DISPLAY_CONTENTS_PAGE = `<!doctype html><html><head><title>Jeel Nandha | LinkedIn</title></head><body><main>
+  <div style="display:contents">
+    <section><div style="display:contents"><div style="display:contents"><h2>Jeel Nandha</h2></div>
+      <div><p>AI/ML Builder | Researcher | Security</p></div>
+      <div><p>Ahmedabad, Gujarat, India</p></div></div></section>
+    <div style="display:none"><p>Stale mobile headline</p></div>
+    <section>${h('About')}<div><p>I build ML systems.</p></div></section>
+    <section>${h('Experience')}<div style="display:contents">${d(
+      'Machine Learning Engineer',
+      'Northwind Labs · Full-time',
+      'Jan 2025 - Present · 9 mos',
+      'Remote',
+      'Built ranking models for production traffic at scale.',
+    )}</div></section>
+  </div>
+</main></body></html>`;

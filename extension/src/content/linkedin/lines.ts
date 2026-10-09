@@ -29,20 +29,17 @@ const CHROME_LINES =
 
 const PUNCTUATION_ONLY = /^[\s·•–—|…\-.,:;()↗→]*$/;
 
+/**
+ * Hidden means the hidden attribute, a screen-reader-only copy, or display:none.
+ * Deliberately NOT Element.checkVisibility(): that also reports `display: contents`
+ * wrappers as invisible, and LinkedIn wraps whole sections in them. Skipping such a
+ * wrapper dropped every line beneath it (the headline and most roles).
+ */
 function isHidden(el: Element): boolean {
   if (el.hasAttribute('hidden')) return true;
   const cls = el.getAttribute('class');
   if (cls && VISUALLY_HIDDEN.test(cls)) return true;
-  // Chrome 105+: display:none / visibility:hidden anywhere up the tree.
-  const check = (el as Element & { checkVisibility?: (o?: object) => boolean }).checkVisibility;
-  if (typeof check === 'function') {
-    try {
-      return !check.call(el, { checkVisibilityCSS: true });
-    } catch {
-      return false;
-    }
-  }
-  return false;
+  return getComputedStyle(el).display === 'none';
 }
 
 /** "TitleTitle" / "Title Title" -> "Title" (a visible copy followed by a hidden copy). */

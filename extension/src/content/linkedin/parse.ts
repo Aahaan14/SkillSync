@@ -5,6 +5,7 @@ import type {
   ExtractionReport,
   Profile,
   ProjectItem,
+  SectionStatus,
   SkillItem,
 } from '../../types';
 import {
@@ -13,6 +14,9 @@ import {
   SKILLS_LINE,
   TOP_CARD_NOISE,
   clean,
+  credentialId,
+  headingCount,
+  httpUrl,
   kindOf,
   looksLikeLocation,
   parseDates,
@@ -20,8 +24,17 @@ import {
   uniqueSkills,
   type SectionKind,
 } from './shared';
-import { collectLines } from './lines';
-import { parseFromLines } from './textParse';
+import { collapseDoubled, collectLines } from './lines';
+import {
+  inlineSkills,
+  parseCertificationsLines,
+  parseEducationLines,
+  parseExperienceLines,
+  parseFromLines,
+  parseProjectsLines,
+  parseSkillsSectionLines,
+  sectionBody,
+} from './textParse';
 
 /**
  * LinkedIn profile parser.
@@ -78,6 +91,8 @@ function headingText(heading: Element): string {
 interface Found {
   kind: SectionKind;
   container: Element;
+  /** The number LinkedIn prints in the title, e.g. 23 for "Skills (23)". */
+  declared?: number;
 }
 
 /** Smallest ancestor of a heading that holds the section's content but no other section's heading. */
@@ -120,7 +135,7 @@ function discoverSections(doc: Document): { found: Found[]; otherHeadings: strin
     }
     if (seen.has(kind)) continue;
     seen.add(kind);
-    found.push({ kind, container: containerFor(heading, headings, root) });
+    found.push({ kind, container: containerFor(heading, headings, root), declared: headingCount(text) });
   }
 
   // Older markup: anchor divs (#experience, #education...) sit right before the section.
@@ -144,11 +159,24 @@ function discoverSections(doc: Document): { found: Found[]; otherHeadings: strin
   return { found, otherHeadings: Array.from(new Set(otherHeadings)).slice(0, 12) };
 }
 
+const ITEM = 'li, [role="listitem"]';
+
 function topLevelItems(container: Element): Element[] {
-  return Array.from(container.querySelectorAll('li')).filter((li) => {
-    const parentItem = li.parentElement?.closest('li');
+  return Array.from(container.querySelectorAll(ITEM)).filter((li) => {
+    const parentItem = li.parentElement?.closest(ITEM);
     return !parentItem || !container.contains(parentItem);
   });
+}
+
+/** First link in `item` whose text or label matches `pattern`, as an absolute http(s) URL. */
+function linkWhere(item: Element, pattern: RegExp): string | undefined {
+  for (const a of Array.from(item.querySelectorAll('a[href]')).slice(0, 12)) {
+    const label = `${clean(a.textContent)} ${a.getAttribute('aria-label') ?? ''}`;
+    if (!pattern.test(label)) continue;
+    const url = httpUrl((a as HTMLAnchorElement).href || a.getAttribute('href'));
+    if (url) return url;
+  }
+  return undefined;
 }
 
 // ─── item parsing ───
@@ -263,10 +291,14 @@ function parseCertifications(container: Element): CertificationItem[] {
     if (!lines.length) continue;
     const issued = lines.find((l) => /^issued\s/i.test(l));
     const issuer = lines.slice(1).find((l) => !/^(issued|expires|credential id)/i.test(l) && !SKILLS_LINE.test(l));
+    const id = lines.map(credentialId).find(Boolean);
+    const url = linkWhere(li, /credential/i);
     out.push({
       name: lines[0],
       issuer,
       date: issued ? clean(issued.replace(/^issued\s+/i, '').split('·')[0]) : undefined,
+      ...(id ? { credential_id: id } : {}),
+      ...(url ? { credential_url: url } : {}),
     });
   }
   return out;
@@ -285,7 +317,8 @@ function parseProjects(container: Element): { items: ProjectItem[]; skills: stri
       else rest.push(line);
     }
     const description = rest.filter((l) => l.length > 40).sort((a, b) => b.length - a.length)[0];
-    items.push({ name: lines[0], description });
+    const url = linkWhere(li, /show project|view project|project link/i);
+    items.push({ name: lines[0], description, ...(url ? { url } : {}) });
   }
   return { items, skills };
 }
@@ -312,17 +345,33 @@ function parseAbout(container: Element, headingLabel: RegExp): string | undefine
 
 // ─── top card ───
 
-function parseTopCard(doc: Document): { name: string; headline?: string; location?: string } {
+/**
+ * The element holding the person's name. Normally the page's <h1>; some LinkedIn
+ * layouts render it as an h2 / role="heading" instead, so fall back to the heading
+ * whose text equals the name in the tab title ("Jane Doe | LinkedIn").
+ */
+function findNameElement(doc: Document, titleName: string): Element | null {
   const h1 = doc.querySelector('main h1') ?? doc.querySelector('h1');
+  if (h1) return h1;
+  const key = titleName.toLowerCase();
+  if (!key) return null;
+  const candidates = Array.from(doc.querySelectorAll('h2, h3, [role="heading"]')).slice(0, 80);
+  return (
+    candidates.find((el) => headingText(el).toLowerCase().replace(/\s*·.*$/, '').trim() === key) ?? null
+  );
+}
+
+function parseTopCard(doc: Document): { name: string; headline?: string; location?: string } {
   const titleName = clean(doc.title)
     .replace(/^\(\d+\)\s*/, '')
     .replace(/\s*[|–-]\s*linkedin.*$/i, '');
-  const name = clean(h1?.textContent) || titleName;
+  const nameEl = findNameElement(doc, titleName);
+  const name = (nameEl ? collapseDoubled(headingText(nameEl).replace(/\s*·.*$/, '').trim()) : '') || titleName;
 
-  if (!h1) return { name };
+  if (!nameEl) return { name };
 
   // Walk up until the container also holds a second line of text (headline etc.).
-  let card: Element | null = h1.parentElement;
+  let card: Element | null = nameEl.parentElement;
   while (card && card.parentElement && linesOf(card).filter((l) => l !== name).length < 2) {
     card = card.parentElement;
   }
@@ -336,17 +385,134 @@ function parseTopCard(doc: Document): { name: string; headline?: string; locatio
   return { name, headline, location };
 }
 
+/**
+ * Attach "Show credential" links to certifications that were read from text. A link
+ * is only attached when the smallest block around it that mentions an issue date names
+ * exactly one of the certifications, so a link is never guessed onto the wrong entry.
+ */
+function attachCredentialUrls(container: Element, certs: CertificationItem[]): void {
+  for (const a of Array.from(container.querySelectorAll('a[href]')).slice(0, 60)) {
+    const label = `${clean(a.textContent)} ${a.getAttribute('aria-label') ?? ''}`;
+    if (!/credential/i.test(label)) continue;
+    const url = httpUrl((a as HTMLAnchorElement).href || a.getAttribute('href'));
+    if (!url) continue;
+    // Climb to the smallest block that has an "Issued ..." line, comparing whole lines
+    // (textContent would glue neighbouring paragraphs together).
+    let node: Element | null = a.parentElement;
+    let entryLines: string[] = node ? collectLines(node) : [];
+    while (node && node !== container && !entryLines.some((l) => /^issued\b/i.test(l))) {
+      node = node.parentElement;
+      entryLines = node ? collectLines(node) : [];
+    }
+    const hits = certs.filter((c) => entryLines.includes(c.name));
+    if (hits.length === 1 && !hits[0].credential_url) hits[0].credential_url = url;
+  }
+}
+
+// ─── page state ───
+
+/** Placeholders LinkedIn shows while a part of the page is still loading. */
+const LOADING_SELECTOR =
+  '[aria-busy="true"], [role="progressbar"], .artdeco-loader, [class*="skeleton"], [class*="Skeleton"], [class*="shimmer"], [class*="Shimmer"]';
+
+const SECTION_KINDS: SectionKind[] = ['about', 'experience', 'education', 'certifications', 'skills', 'projects'];
+
+const SECTION_LABEL: Record<SectionKind, string> = {
+  about: 'About',
+  experience: 'Experience',
+  education: 'Education',
+  certifications: 'Licenses & certifications',
+  skills: 'Skills',
+  projects: 'Projects',
+};
+
+/** "Show all 23 skills" / link to the separate skills page. The page is never opened for the user. */
+function inspectSkillsLink(doc: Document): { linkPresent: boolean; declared?: number } {
+  let linkPresent = false;
+  let declared: number | undefined;
+  for (const a of Array.from(doc.querySelectorAll('a[href]')).slice(0, 500)) {
+    const href = a.getAttribute('href') ?? '';
+    const label = `${clean(a.textContent)} ${a.getAttribute('aria-label') ?? ''}`;
+    const isSkillsLink = /\/details\/skills/i.test(href) || /show all\s+\d*\s*skills?/i.test(label);
+    if (!isSkillsLink) continue;
+    linkPresent = true;
+    const count = /(\d+)\s+skills?/i.exec(label);
+    if (count && declared === undefined) declared = Number(count[1]);
+  }
+  return { linkPresent, declared };
+}
+
 // ─── entry point ───
 
 export function parseLinkedInProfile(doc: Document, url: string): { profile: Profile; report: ExtractionReport } {
   const warnings: string[] = [];
   const top = parseTopCard(doc);
-  const { found, otherHeadings } = discoverSections(doc);
+  const discovered = discoverSections(doc);
+  const { found } = discovered;
+  // The diagnostic lists section names, not people: drop the profile owner's own name
+  // when LinkedIn renders it as a heading.
+  const ownName = top.name.toLowerCase();
+  const otherHeadings = discovered.otherHeadings.filter(
+    (h) => !ownName || h.toLowerCase().replace(/\s*·.*$/, '').trim() !== ownName,
+  );
   const section = (kind: SectionKind) => found.find((f) => f.kind === kind)?.container;
+  const declaredFor = (kind: SectionKind) => found.find((f) => f.kind === kind)?.declared;
+
+  let usedText = false;
+
+  // Scoped fallback: when a section was found but its markup has no list items we can
+  // read, parse that section's own visible lines (never the whole page, so sidebar
+  // text cannot leak in).
+  const scopedLines = (kind: SectionKind): string[] => {
+    const container = section(kind);
+    return container ? sectionBody(collectLines(container), kind) : [];
+  };
 
   const experience = section('experience') ? parseExperience(section('experience')!) : { items: [], skills: [] };
+  if (section('experience') && !experience.items.length) {
+    const lines = scopedLines('experience');
+    const items = parseExperienceLines(lines);
+    if (items.length) {
+      experience.items = items;
+      experience.skills.push(...inlineSkills(lines));
+      usedText = true;
+    }
+  }
+
   const projects = section('projects') ? parseProjects(section('projects')!) : { items: [], skills: [] };
-  const sectionSkills = section('skills') ? parseSkillsSection(section('skills')!) : [];
+  if (section('projects') && !projects.items.length) {
+    const lines = scopedLines('projects');
+    const items = parseProjectsLines(lines);
+    if (items.length) {
+      projects.items = items;
+      projects.skills.push(...inlineSkills(lines));
+      usedText = true;
+    }
+  }
+
+  let sectionSkills = section('skills') ? parseSkillsSection(section('skills')!) : [];
+  if (section('skills') && !sectionSkills.length) {
+    const items = parseSkillsSectionLines(scopedLines('skills'));
+    if (items.length) {
+      sectionSkills = items;
+      usedText = true;
+    }
+  }
+
+  let education = section('education') ? parseEducation(section('education')!) : [];
+  if (section('education') && !education.length) {
+    education = parseEducationLines(scopedLines('education'));
+    if (education.length) usedText = true;
+  }
+
+  let certifications = section('certifications') ? parseCertifications(section('certifications')!) : [];
+  if (section('certifications') && !certifications.length) {
+    certifications = parseCertificationsLines(scopedLines('certifications'));
+    if (certifications.length) {
+      usedText = true;
+      attachCredentialUrls(section('certifications')!, certifications);
+    }
+  }
 
   const profile: Profile = {
     name: top.name || undefined,
@@ -357,18 +523,18 @@ export function parseLinkedInProfile(doc: Document, url: string): { profile: Pro
     source: 'linkedin',
     skills: uniqueSkills(sectionSkills, experience.skills, projects.skills),
     experience: experience.items,
-    education: section('education') ? parseEducation(section('education')!) : [],
-    certifications: section('certifications') ? parseCertifications(section('certifications')!) : [],
+    education,
+    certifications,
     projects: projects.items,
   };
   const structuralFound = found.length > 0;
 
-  // Second strategy: plain visible text. It fills only what the HTML structure
-  // could not provide, so a page the structural parser already handles is unchanged.
+  // Last strategy: plain visible text of the whole page. It fills only what the HTML
+  // structure and the scoped section parse could not provide, so a page they already
+  // handle is unchanged.
   const root = doc.querySelector('main') ?? doc.body;
   const lines = collectLines(root);
   const text = parseFromLines(lines, profile.name);
-  let usedText = false;
   const fill = <T,>(current: T[], fallback: T[]): T[] => {
     if (current.length || !fallback.length) return current;
     usedText = true;
@@ -396,12 +562,56 @@ export function parseLinkedInProfile(doc: Document, url: string): { profile: Pro
 
   const sections = Array.from(new Set<SectionKind>([...found.map((f) => f.kind), ...text.sections]));
 
+  // ─── page state: is a missing section absent, or just not loaded yet? ───
+  const readyState = doc.readyState || 'complete';
+  const loadingIndicators = root.querySelector(LOADING_SELECTOR) !== null;
+  const pageComplete = readyState === 'complete' && !loadingIndicators && sections.length > 0;
+
+  const entries: Record<SectionKind, number> = {
+    about: profile.about ? 1 : 0,
+    experience: profile.experience.length,
+    education: profile.education.length,
+    certifications: profile.certifications.length,
+    skills: profile.skills.length,
+    projects: profile.projects.length,
+  };
+  const sectionStatus = Object.fromEntries(
+    SECTION_KINDS.map((kind): [SectionKind, SectionStatus] => {
+      if (sections.includes(kind)) return [kind, entries[kind] > 0 ? 'extracted' : 'empty'];
+      return [kind, pageComplete ? 'absent' : 'unavailable'];
+    }),
+  ) as Record<SectionKind, SectionStatus>;
+
+  const skillsLink = inspectSkillsLink(doc);
+  const declaredSkills = declaredFor('skills') ?? skillsLink.declared;
+  const declaredCerts = declaredFor('certifications');
+
+  // ─── warnings ───
   if (!sections.length) {
     warnings.push('No profile sections (Experience, Education, ...) were found. The page may still be loading, or LinkedIn changed its layout.');
   }
   if (sections.length && !profile.headline) warnings.push('No headline was found.');
   if (sections.includes('experience') && !profile.experience.length) warnings.push('The Experience section was found but no roles could be read.');
-  if (!profile.skills.length) warnings.push('No skills were found on this page. LinkedIn shows most skills on a separate "Show all skills" page.');
+  for (const kind of ['education', 'certifications', 'projects'] as const) {
+    if (sectionStatus[kind] === 'empty') {
+      warnings.push(`The ${SECTION_LABEL[kind]} section was found but no entries could be read.`);
+    }
+  }
+  if (sections.length && !pageComplete) {
+    const pending = SECTION_KINDS.filter((k) => sectionStatus[k] === 'unavailable').map((k) => SECTION_LABEL[k]);
+    if (pending.length) {
+      warnings.push(
+        `LinkedIn was still loading when the page was read, so these could not be checked: ${pending.join(', ')}. Scroll down so they appear, wait a moment, then try again.`,
+      );
+    }
+  }
+  if (!profile.skills.length) {
+    warnings.push('No skills were found on this page. LinkedIn shows most skills on a separate "Show all skills" page.');
+  } else if (declaredSkills !== undefined && profile.skills.length < declaredSkills) {
+    warnings.push(
+      `Only ${profile.skills.length} of ${declaredSkills} skills are visible on this profile page. LinkedIn lists the rest on its "Show all skills" page, which SkillSync does not open for you; add any missing skills on the dashboard Profile page.`,
+    );
+  }
   if (!sections.includes('skills') && profile.skills.length) {
     warnings.push('Skills were gathered from your experience entries only; the full skills list is not on this page.');
   }
@@ -432,6 +642,10 @@ export function parseLinkedInProfile(doc: Document, url: string): { profile: Pro
       listItems: doc.querySelectorAll('li').length,
       ariaHidden: doc.querySelectorAll('span[aria-hidden="true"]').length,
     },
+    sectionStatus,
+    declaredCounts: { skills: declaredSkills, certifications: declaredCerts },
+    skillsPage: { linkPresent: skillsLink.linkPresent },
+    load: { readyState, loadingIndicators, complete: pageComplete },
   };
 
   return { profile, report };

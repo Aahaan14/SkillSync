@@ -38,6 +38,12 @@ export interface CertificationItem {
   name: string;
   issuer?: string;
   date?: string;
+  /**
+   * Read from the page when LinkedIn shows them. The backend's CertificationItem
+   * schema has no such fields, so toProfilePayload() does not send them.
+   */
+  credential_id?: string;
+  credential_url?: string;
 }
 
 export interface ProjectItem {
@@ -74,7 +80,37 @@ export interface ExtractionReport {
   method?: 'structure' | 'text' | 'mixed';
   /** Shape of the page (counts only), to diagnose layout changes. */
   page?: { lines: number; h1: boolean; headings: number; listItems: number; ariaHidden: number };
+  /**
+   * Per section: entries extracted / section present but nothing readable / section
+   * absent from the page / unknown because the page was not fully loaded.
+   */
+  sectionStatus?: Record<'about' | 'experience' | 'education' | 'certifications' | 'skills' | 'projects', SectionStatus>;
+  /** Counts LinkedIn prints in section titles or links, e.g. "Skills (23)". Numbers only. */
+  declaredCounts?: { skills?: number; certifications?: number };
+  /** Whether LinkedIn offers a separate "Show all skills" page (never opened automatically). */
+  skillsPage?: { linkPresent: boolean };
+  /** Loading state when the page was read. */
+  load?: {
+    readyState: string;
+    loadingIndicators: boolean;
+    /** True when the page looked fully loaded and nothing was still changing. */
+    complete: boolean;
+    waitedMs?: number;
+    evaluations?: number;
+    timedOut?: boolean;
+  };
 }
+
+/** What the extractor can say about one section of the page. */
+export type SectionStatus =
+  /** The section is on the page and entries were read from it. */
+  | 'extracted'
+  /** The section is on the page but no entries could be read from it. */
+  | 'empty'
+  /** The section is not on the page (the page looks fully loaded). */
+  | 'absent'
+  /** Unknown: the page was not fully loaded, so the section may simply not be rendered yet. */
+  | 'unavailable';
 
 /** Message the content scripts answer an EXTRACT_PROFILE request with. */
 export type ExtractionResponse =

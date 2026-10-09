@@ -67,9 +67,9 @@ describe.each([
     ]);
   });
 
-  it('reads certifications without credential ids', () => {
+  it('reads certifications, including the credential id when LinkedIn shows one', () => {
     expect(profile.certifications).toEqual([
-      { name: 'Protopie 101 Crash Course', issuer: 'ProtoPie', date: 'Jul 2025' },
+      { name: 'Protopie 101 Crash Course', issuer: 'ProtoPie', date: 'Jul 2025', credential_id: '6887b3b53d6177db1f032154' },
       { name: 'Google UX Design Certificate', issuer: 'Coursera', date: 'Mar 2023' },
     ]);
   });
@@ -196,9 +196,9 @@ describe('LinkedIn parser: text-only markup (no headings, lists or accessibility
     ]);
   });
 
-  it('reads certifications and ignores credential ids, media blocks and "Show credential"', () => {
+  it('reads certifications and credential ids, ignoring media blocks and "Show credential"', () => {
     expect(profile.certifications).toEqual([
-      { name: 'Certified Cyber Defence Professional (CCDP)', issuer: 'Demmisto Technologies Pvt. Ltd', date: 'Sep 2026' },
+      { name: 'Certified Cyber Defence Professional (CCDP)', issuer: 'Demmisto Technologies Pvt. Ltd', date: 'Sep 2026', credential_id: 'DTAHM-IN05815' },
       { name: 'Advanced Learning Algorithms', issuer: 'DeepLearning.AI', date: 'Jun 2025' },
     ]);
   });

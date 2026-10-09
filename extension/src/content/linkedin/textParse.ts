@@ -10,10 +10,12 @@ import {
   SKILLS_LINE,
   TOP_CARD_NOISE,
   clean,
+  credentialId,
   kindOf,
   looksLikeLocation,
   parseDates,
   parseSkillsLine,
+  stripCount,
   uniqueSkills,
   type SectionKind,
 } from './shared';
@@ -44,9 +46,13 @@ export interface TextParse {
   sections: SectionKind[];
 }
 
-/** Section titles we do not read but which end the section above them. */
+/**
+ * Section titles we do not read but which end the section above them. Matched against
+ * the WHOLE line (after a trailing count is removed): a prefix match would treat a job
+ * title such as "Analytics Intern" or "Services Engineer" as the start of a new section.
+ */
 const OTHER_SECTION_TITLES =
-  /^(interests|languages|recommendations|courses|honou?rs?\s*(&|and)\s*awards|publications|patents|volunteering|volunteer experience|organi[sz]ations|test scores|causes|activity|analytics|resources|featured|highlights|services|more profiles for you|people also viewed|people you may know|you might like|explore premium profiles|suggested for you|profile language|public profile\s*(&|and)\s*url|ad options|accessibility|talent solutions|help center|privacy\s*(&|and)\s*terms|get the linkedin app|business services)\b/i;
+  /^(interests|languages|recommendations|courses|honou?rs?\s*(&|and)\s*awards|publications|patents|volunteering|volunteer experience|organi[sz]ations|test scores|causes|activity|analytics|resources|featured|highlights|services|more profiles for you|people also viewed|people you may know|you might like|explore premium profiles|suggested for you|profile language|public profile\s*(&|and)\s*url|ad options|accessibility|talent solutions|help center|privacy\s*(&|and)\s*terms|get the linkedin app|business services)$/i;
 
 const DURATION_ONLY = /^\d+\s*(yrs?|years?|mos?|months?)(\s+\d+\s*(mos?|months?))?$/i;
 const EMPLOYMENT = /·\s*(full[- ]time|part[- ]time|self[- ]employed|freelance|contract|internship|apprenticeship|seasonal|temporary|volunteer)\b/i;
@@ -54,8 +60,20 @@ const DEGREE =
   /\b(bachelor|master|doctor|ph\.?d|b\.?\s?tech|m\.?\s?tech|b\.?e\.?|m\.?e\.?|b\.?sc|m\.?sc|b\.?a\.?|m\.?a\.?|mba|diploma|associate|certificate|higher secondary|secondary|high school|hsc|ssc|degree)\b/i;
 const NOT_A_TITLE = /^(credential id|expires|issued|associated with|skills?:)/i;
 
-function stripCount(line: string): string {
-  return line.replace(/\s*\(\d+\)\s*$/, '').replace(/\s*[↗→]\s*$/, '').trim();
+/**
+ * Lines of one section's own container, without its heading, cut at the first
+ * title that starts something else (another profile section, "Interests",
+ * "People you may know"...). Keeps a container that is wider than expected from
+ * leaking neighbouring or sidebar text into the section.
+ */
+export function sectionBody(lines: string[], kind: SectionKind): string[] {
+  const body = lines.length && kindOf(lines[0]) === kind ? lines.slice(1) : lines;
+  const end = body.findIndex((line) => {
+    const text = stripCount(line);
+    const other = kindOf(text);
+    return (other !== null && other !== kind) || (OTHER_SECTION_TITLES.test(text) && text.length < 60);
+  });
+  return end < 0 ? body : body.slice(0, end);
 }
 
 interface Boundary {
@@ -88,13 +106,13 @@ function sectionLines(lines: string[], boundaries: Boundary[], kind: SectionKind
   return lines.slice(start, end);
 }
 
-function inlineSkills(lines: string[]): string[] {
+export function inlineSkills(lines: string[]): string[] {
   return lines.flatMap((l) => parseSkillsLine(l) ?? []);
 }
 
 // ─── sections ───
 
-function parseExperience(lines: string[]): ExperienceItem[] {
+export function parseExperienceLines(lines: string[]): ExperienceItem[] {
   const items: ExperienceItem[] = [];
   const dateAt = lines.map((l, i) => (DATE_RANGE.test(l) ? i : -1)).filter((i) => i >= 0);
 
@@ -160,7 +178,7 @@ function parseExperience(lines: string[]): ExperienceItem[] {
   return items;
 }
 
-function parseEducation(lines: string[]): EducationItem[] {
+export function parseEducationLines(lines: string[]): EducationItem[] {
   const items: EducationItem[] = [];
   lines.forEach((line, i) => {
     const dates = DATE_RANGE.test(line) ? parseDates(line) : null;
@@ -187,7 +205,7 @@ function parseEducation(lines: string[]): EducationItem[] {
   return items;
 }
 
-function parseCertifications(lines: string[]): CertificationItem[] {
+export function parseCertificationsLines(lines: string[]): CertificationItem[] {
   const items: CertificationItem[] = [];
   lines.forEach((line, i) => {
     if (!/^issued\b/i.test(line)) return;
@@ -196,16 +214,23 @@ function parseCertifications(lines: string[]): CertificationItem[] {
     if (!prev) return;
 
     const hasIssuer = !!prev2 && !NOT_A_TITLE.test(prev2) && !SKILLS_LINE.test(prev2) && !DATE_RANGE.test(prev2);
+    // The credential id, when shown, is within the next few lines, before the next entry's "Issued" line.
+    let id: string | undefined;
+    for (let j = i + 1; j < Math.min(lines.length, i + 5) && !/^issued\b/i.test(lines[j]); j++) {
+      id = credentialId(lines[j]);
+      if (id) break;
+    }
     items.push({
       name: hasIssuer ? prev2 : prev,
       issuer: hasIssuer ? prev : undefined,
       date: clean(line.replace(/^issued\s+/i, '').split('·')[0]),
+      ...(id ? { credential_id: id } : {}),
     });
   });
   return items;
 }
 
-function parseProjects(lines: string[]): ProjectItem[] {
+export function parseProjectsLines(lines: string[]): ProjectItem[] {
   const items: ProjectItem[] = [];
   lines.forEach((line, i) => {
     if (!DATE_RANGE.test(line) || !lines[i - 1] || NOT_A_TITLE.test(lines[i - 1])) return;
@@ -217,7 +242,7 @@ function parseProjects(lines: string[]): ProjectItem[] {
   return items;
 }
 
-function parseSkillsSection(lines: string[]): SkillItem[] {
+export function parseSkillsSectionLines(lines: string[]): SkillItem[] {
   return lines
     .filter(
       (l) =>
@@ -273,12 +298,12 @@ export function parseFromLines(lines: string[], name: string | undefined): TextP
     headline,
     location,
     about: about || undefined,
-    experience: parseExperience(experienceLines),
-    education: parseEducation(educationLines),
-    certifications: parseCertifications(certificationLines),
-    projects: parseProjects(projectLines),
+    experience: parseExperienceLines(experienceLines),
+    education: parseEducationLines(educationLines),
+    certifications: parseCertificationsLines(certificationLines),
+    projects: parseProjectsLines(projectLines),
     skills: uniqueSkills(
-      skillLines ? parseSkillsSection(skillLines) : [],
+      skillLines ? parseSkillsSectionLines(skillLines) : [],
       inlineSkills(experienceLines),
       inlineSkills(educationLines),
       inlineSkills(certificationLines),
