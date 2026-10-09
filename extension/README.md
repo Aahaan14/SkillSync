@@ -37,9 +37,20 @@ npm test          # parser, popup behaviour and page-detection tests
   structure. **It cannot be verified against the live site from CI**, so if LinkedIn changes
   its markup and a section stops being read, the popup says so ("Copy diagnostic details"
   lists which sections were found, counts only, no profile text).
-* LinkedIn shows most skills on a separate "Show all skills" page. Skills are collected from
-  the Skills section and from skills named on experience entries; a profile with few of
-  either will have a short skills list. Add the rest on the dashboard Profile page.
+* LinkedIn shows only some skills on the profile page; the rest are on its separate "Show all
+  skills" page (`/in/<name>/details/skills/`). The profile reader collects skills from the Skills
+  section and from experience entries, and reports how many LinkedIn says exist. When some are
+  missing, the popup offers **Open full skills list**. On that page the button becomes **Add skills
+  from this page** (`content/linkedin/skillsPage.ts`): it reads the list, merges it into the saved
+  profile (never replacing the headline, roles or education) and re-runs the analysis. Analyzing the
+  profile page again later keeps skills saved earlier for the same person (`sameLinkedInProfile`), and
+  never mixes in a different person's. The reader never scrolls or clicks for you: scroll to the
+  bottom of the list first so LinkedIn loads every skill.
+* Only `linkedin.com/in/<name>/` (and its contact-info overlay) counts as a profile page; other
+  `/in/<name>/...` sub-pages such as `details/experience` are reported as "not a profile".
+* **Content scripts cannot use `import` at runtime.** The popup and a content script must never share a
+  module (the bundler would emit a shared chunk and the script would fail with "Cannot use import
+  statement outside a module"). `popup/pageInfo.ts` therefore does not import from `content/`.
 * **Other websites** only capture the page title and text (no skills), and replace your saved
   profile, so the popup asks for explicit confirmation first.
 * A profile with neither a headline nor a job title is never saved, because the backend

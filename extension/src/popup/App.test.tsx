@@ -331,3 +331,105 @@ describe('zero-job and null-score results', () => {
     expect(text()).toContain('No score yet');
   });
 });
+
+describe('full skills list', () => {
+  const SKILLS_URL = 'https://www.linkedin.com/in/jane/details/skills/';
+  const skillsOnly = (names: string[]): ExtractionResponse => ({
+    success: true,
+    profile: { profile_url: SKILLS_URL, source: 'linkedin', skills: names.map((name) => ({ name })), experience: [], education: [], certifications: [], projects: [] },
+    report: { ...REPORT, found: { name: false, headline: false, location: false, about: false }, counts: { ...REPORT.counts, skills: names.length, experience: 0 } },
+  });
+  const saved = (skills: string[], url = 'https://www.linkedin.com/in/jane/') => ({
+    id: 1,
+    user_id: 1,
+    ...PROFILE,
+    profile_url: url,
+    skills: skills.map((name) => ({ name })),
+  });
+  const routes = (profile: (method: string) => Promise<Response> | Response): Record<string, Route> => ({
+    '/api/auth/me': () => respond(200, FULL_USER),
+    '/api/analysis/latest': () => respond(404, { detail: 'No analysis found' }),
+    '/api/profile': profile,
+    '/api/analysis': () => respond(201, ANALYSIS),
+  });
+
+  it('adds the skills to the saved profile instead of replacing it', async () => {
+    const h = setup({
+      store: signedIn(null),
+      tabUrl: SKILLS_URL,
+      extraction: skillsOnly(['Python', 'Docker']),
+      routes: routes(() => respond(200, saved(['Python', 'AWS']))),
+    });
+    await mount();
+    expect(button(/Add skills from this page/)).toBeTruthy();
+    await click(button(/Add skills from this page/));
+    await flush(50);
+
+    expect(h.calls.slice(2)).toEqual(['GET /api/profile', 'PUT /api/profile', 'POST /api/analysis']);
+    expect(text()).toContain('Skills added: 1 new, 3 in your profile now');
+  });
+
+  it('asks you to analyze the main profile first when nothing is saved yet', async () => {
+    const h = setup({
+      store: signedIn(null),
+      tabUrl: SKILLS_URL,
+      extraction: skillsOnly(['Python']),
+      routes: routes(() => respond(404, { detail: 'Profile not found. Create one first.' })),
+    });
+    await mount();
+    await click(button(/Add skills from this page/));
+    await flush(30);
+
+    expect(text()).toContain('Analyze your main LinkedIn profile page first');
+    expect(h.calls.some((c) => c.startsWith('PUT') || c.startsWith('POST'))).toBe(false);
+  });
+
+  const partialPage = (declared: number): ExtractionResponse => ({
+    success: true,
+    profile: PROFILE,
+    report: { ...REPORT, declaredCounts: { skills: declared }, warnings: [`Only 1 of ${declared} skills are visible on this profile page.`] },
+  });
+
+  it('re-analyzing the profile page keeps skills saved earlier from the full list', async () => {
+    setup({
+      store: signedIn(null),
+      extraction: partialPage(5),
+      routes: routes(() => respond(200, saved(['Python', 'AWS', 'Docker', 'Git', 'SQL']))),
+    });
+    await mount();
+    await click(button(/Analyze this profile/));
+    await flush(50);
+
+    expect(text()).toContain('Profile saved: 5 skills');
+    expect(text()).not.toContain('Open full skills list');
+  });
+
+  it('never merges another person\'s saved skills, and offers the full skills list instead', async () => {
+    setup({
+      store: signedIn(null),
+      extraction: partialPage(5),
+      routes: routes(() => respond(200, saved(['AWS', 'Docker', 'Git', 'SQL'], 'https://www.linkedin.com/in/someone-else/'))),
+    });
+    await mount();
+    await click(button(/Analyze this profile/));
+    await flush(50);
+
+    expect(text()).toContain('Profile saved: 1 skill');
+    expect(text()).toContain('Only 1 of your 5 LinkedIn skills could be read');
+    expect(button(/Open full skills list/)).toBeTruthy();
+  });
+
+  it('can re-run the analysis on the saved profile without reading the page', async () => {
+    const h = setup({
+      store: signedIn(ANALYSIS),
+      routes: { ...routes(() => respond(200, saved(['Python']))), '/api/analysis/latest': () => respond(200, ANALYSIS) },
+    });
+    await mount();
+    await flush(20);
+    await click(button(/Re-run with my saved profile/));
+    await flush(50);
+
+    expect(h.calls.slice(2)).toEqual(['POST /api/analysis']);
+    expect(h.sendMessage).not.toHaveBeenCalled();
+  });
+});

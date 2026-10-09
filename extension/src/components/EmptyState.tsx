@@ -15,5 +15,9 @@ export const EmptyState = () => (
       <li><span className="mr-2 font-semibold text-brand-400">2</span>Scroll once so every section loads</li>
       <li><span className="mr-2 font-semibold text-brand-400">3</span>Click Analyze this profile</li>
     </ol>
+    <p className="mx-auto mt-4 max-w-[270px] text-[11px] leading-snug text-zinc-500">
+      Tip: a profile page lists only some of your skills. Afterwards open &ldquo;Show all skills&rdquo;, scroll to the bottom and click
+      &ldquo;Add skills from this page&rdquo; for a more accurate score.
+    </p>
   </section>
 );

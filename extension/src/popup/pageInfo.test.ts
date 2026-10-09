@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { formatRelative, formatScore, scoreTone } from './format';
-import { classifyPage, contentScriptFor } from './pageInfo';
+import { classifyPage, contentScriptFor, sameLinkedInProfile, skillsListUrl } from './pageInfo';
 
 describe('classifyPage', () => {
   it.each([
@@ -9,7 +9,9 @@ describe('classifyPage', () => {
     ['https://in.linkedin.com/in/jane', 'linkedin-profile'],
     ['https://www.linkedin.com/in/jane/details/skills/', 'linkedin-skills'],
     ['https://www.linkedin.com/in/jane/details/skills', 'linkedin-skills'],
-    ['https://www.linkedin.com/in/jane/details/experience/', 'linkedin-profile'],
+    ['https://www.linkedin.com/in/jane/overlay/contact-info/', 'linkedin-profile'],
+    ['https://www.linkedin.com/in/jane/details/experience/', 'linkedin-other'],
+    ['https://www.linkedin.com/in/jane/recent-activity/all/', 'linkedin-other'],
     ['https://www.linkedin.com/feed/', 'linkedin-other'],
     ['https://www.linkedin.com/company/acme/', 'linkedin-other'],
     ['https://github.com/someone', 'other'],
@@ -65,5 +67,21 @@ describe('formatScore', () => {
     expect(formatScore(80)).toBe('80%');
     expect(formatScore(0)).toBe('0%');
     expect(formatScore(66.666)).toBe('66.7%');
+  });
+});
+
+describe('sameLinkedInProfile / skillsListUrl', () => {
+  it('compares people by their /in/<name> path, ignoring host, case and sub-page', () => {
+    expect(sameLinkedInProfile('https://www.linkedin.com/in/Jane/', 'https://in.linkedin.com/in/jane/details/skills/')).toBe(true);
+    expect(sameLinkedInProfile('https://www.linkedin.com/in/jane/', 'https://www.linkedin.com/in/john/')).toBe(false);
+    expect(sameLinkedInProfile(null, 'https://www.linkedin.com/in/john/')).toBe(false);
+    expect(sameLinkedInProfile('https://evil.example/in/jane/', 'https://evil.example/in/jane/')).toBe(false);
+  });
+
+  it('builds the full skills list URL for a profile, and only for a profile', () => {
+    expect(skillsListUrl('https://www.linkedin.com/in/jane/')).toBe('https://www.linkedin.com/in/jane/details/skills/');
+    expect(skillsListUrl('https://in.linkedin.com/in/jane/overlay/contact-info/')).toBe('https://in.linkedin.com/in/jane/details/skills/');
+    expect(skillsListUrl('https://github.com/jane')).toBeNull();
+    expect(skillsListUrl(undefined)).toBeNull();
   });
 });

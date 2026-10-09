@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  addSkillsToProfile,
   errorMessage,
   getCurrentUser,
   getLatestAnalysis,
-  addSkillsToProfile,
+  getProfile,
   isApiError,
   login,
   logout,
@@ -12,6 +13,7 @@ import {
   triggerAnalysis,
 } from '../api/client';
 import { WEB_APP_URL } from '../api/config';
+import { mergeSkills } from '../api/mergeSkills';
 import { assessProfile, summarizeProfile } from '../api/profileQuality';
 import { clearSession, readStoredSession, writeSnapshot, type SnapshotUser } from '../api/session';
 import { AnalyzeCard } from '../components/AnalyzeCard';
@@ -23,11 +25,11 @@ import { LoginForm, type Credentials } from '../components/LoginForm';
 import { MatchScore } from '../components/MatchScore';
 import { ResultTabs } from '../components/ResultTabs';
 import { Sparkles } from '../components/icons';
-import type { ExtractionReport } from '../types';
+import type { ExtractionReport, Profile } from '../types';
 import type { Analysis, User } from '../types/api';
-import { extractFromTab } from './extract';
+import { countSkillsOnTab, extractFromTab } from './extract';
 import { formatRelative } from './format';
-import { classifyPage, type PageInfo } from './pageInfo';
+import { classifyPage, sameLinkedInProfile, skillsListUrl, type PageInfo } from './pageInfo';
 
 const SESSION_EXPIRED = 'Your session has expired. Please sign in again.';
 
@@ -56,6 +58,33 @@ async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
   }
 }
 
+/** "Only N of M skills" is replaced by a dedicated banner with a one-click fix. */
+const PARTIAL_SKILLS_WARNING = /^Only \d+ of \d+ skills/;
+
+/** The profile page showed fewer skills than LinkedIn says the profile has. */
+interface MoreSkills {
+  have: number;
+  declared: number;
+  url: string;
+}
+
+/**
+ * The profile page only lists a handful of skills. If the saved profile is the same
+ * person's and already has more (added from the full skills list), keep them instead of
+ * shrinking the profile back to what this page shows. Never merges across different people.
+ */
+async function withSavedSkills(profile: Profile): Promise<Profile> {
+  try {
+    const saved = await getProfile();
+    if (!sameLinkedInProfile(saved.profile_url, profile.profile_url)) return profile;
+    const merged = mergeSkills(saved.skills ?? [], profile.skills);
+    return { ...profile, skills: merged.map((s) => (s.endorsements == null ? { name: s.name } : { name: s.name, endorsements: s.endorsements })) };
+  } catch (err: unknown) {
+    if (isApiError(err) && err.kind === 'unauthorized') throw err;
+    return profile; // nothing saved yet, or the server is unreachable: save what was read
+  }
+}
+
 function App() {
   const [view, setView] = useState<View>('loading');
   const [user, setUser] = useState<SnapshotUser | null>(null);
@@ -68,6 +97,9 @@ function App() {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [savedSummary, setSavedSummary] = useState<string | null>(null);
+  const [moreSkills, setMoreSkills] = useState<MoreSkills | null>(null);
+  /** Skills rendered on the LinkedIn skills-list tab: undefined while counting, null if unknown. */
+  const [skillsCount, setSkillsCount] = useState<number | null | undefined>(undefined);
 
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState('');
@@ -164,6 +196,20 @@ function App() {
     };
   }, [revalidate]);
 
+  // On the skills-list tab, tell the user how many skills are loaded before they commit.
+  useEffect(() => {
+    if (page.kind !== 'linkedin-skills' || view !== 'home') return;
+    let cancelled = false;
+    void (async () => {
+      const tab = await getActiveTab();
+      const count = tab ? await countSkillsOnTab(tab) : null;
+      if (!cancelled) setSkillsCount(count);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [page.kind, view]);
+
   // ─── auth ───
 
   const handleAuth = async (mode: 'login' | 'register', credentials: Credentials) => {
@@ -222,39 +268,76 @@ function App() {
     }
   };
 
-  const runAnalysis = async () => {
+  const resetResults = () => {
     setNotice(null);
     setWarnings([]);
     setSavedSummary(null);
+    setMoreSkills(null);
     setConfirmAnyway(false);
+  };
+
+  /** Runs one step-by-step task; turns any failure into a message (or back to sign-in on 401). */
+  const guarded = async (task: () => Promise<void>, retry: () => void) => {
+    try {
+      await task();
+    } catch (err: unknown) {
+      if (isApiError(err) && err.kind === 'unauthorized') {
+        await expireSession();
+      } else {
+        setNotice({ tone: 'error', message: errorMessage(err, 'Analysis failed.'), action: { label: 'Try again', onClick: retry } });
+      }
+    } finally {
+      setPhase(null);
+    }
+  };
+
+  /** Shared tail of every run: ask the backend for the analysis and show the outcome. */
+  const analyzeSavedProfile = async (summary: string | null, pageWarnings: string[], more: MoreSkills | null) => {
+    setPhase('analyzing');
+    const result = await triggerAnalysis();
+
+    // POST /analysis answers 201 even when the run failed; check the status.
+    if (result.status === 'failed') {
+      setNotice({ tone: 'error', message: result.error_message || 'The analysis could not be completed. Please try again.' });
+      return;
+    }
+    if (result.status !== 'completed') {
+      setNotice({ tone: 'info', message: 'The analysis is still running. Re-open the popup in a moment.' });
+      return;
+    }
+
+    setAnalysis(result);
+    setSavedSummary(summary);
+    setWarnings(pageWarnings);
+    setMoreSkills(more);
+    if (userRef.current) void writeSnapshot(userRef.current, result);
+  };
+
+  const runAnalysis = async () => {
+    resetResults();
     setPhase('extracting');
 
-    try {
+    await guarded(async () => {
       const tab = await getActiveTab();
       if (!tab) throw new Error('No active tab found. Open a profile page and try again.');
-      setPage(classifyPage(tab.url));
+      const info = classifyPage(tab.url);
+      setPage(info);
 
       const extraction = await extractFromTab(tab);
       if (!extraction.success) throw new Error(extraction.error);
       const { profile, report } = extraction;
 
-      let summary: string;
-      let verdictWarnings: string[];
-
-      if (classifyPage(tab.url).kind === 'linkedin-skills') {
+      if (info.kind === 'linkedin-skills') {
         // The full skills list: add to the saved profile instead of replacing it.
         if (!profile.skills.length) {
-          setNotice({
-            tone: 'error',
-            message: 'No skills were found on this page yet. Scroll down so the list loads, then try again.',
-          });
+          setNotice({ tone: 'error', message: 'No skills were found on this page yet. Scroll down so the list loads, then try again.' });
           return;
         }
         setPhase('saving');
+        let summary: string;
         try {
           const { added, total } = await addSkillsToProfile(profile.skills);
-          summary = `${total} skills saved (${added} new from this page)`;
-          verdictWarnings = [];
+          summary = added > 0 ? `Skills added: ${added} new, ${total} in your profile now` : `Nothing new: all skills on this page were already saved (${total} in total)`;
         } catch (err: unknown) {
           if (isApiError(err) && err.kind === 'not_found') {
             setNotice({
@@ -265,53 +348,62 @@ function App() {
           }
           throw err;
         }
-      } else {
-        // Do not replace the saved profile with something the backend cannot analyse.
-        const verdict = assessProfile(profile, report);
-        if (!verdict.canAnalyze) {
-          setNotice({
-            tone: 'error',
-            message: verdict.blockingReason ?? "Couldn't read this page.",
-            action: { label: 'Copy diagnostic details', onClick: () => void copyDetails(report)() },
-          });
-          return;
-        }
-        setPhase('saving');
-        await saveProfile(profile);
-        summary = summarizeProfile(profile);
-        verdictWarnings = verdict.warnings;
-      }
-
-      setPhase('analyzing');
-      const result = await triggerAnalysis();
-
-      // POST /analysis answers 201 even when the run failed; check the status.
-      if (result.status === 'failed') {
-        setNotice({ tone: 'error', message: result.error_message || 'The analysis could not be completed. Please try again.' });
-        return;
-      }
-      if (result.status !== 'completed') {
-        setNotice({ tone: 'info', message: 'The analysis is still running. Re-open the popup in a moment.' });
+        await analyzeSavedProfile(summary, [], null);
         return;
       }
 
-      setAnalysis(result);
-      setSavedSummary(summary);
-      setWarnings(verdictWarnings);
-      if (userRef.current) void writeSnapshot(userRef.current, result);
-    } catch (err: unknown) {
-      if (isApiError(err) && err.kind === 'unauthorized') {
-        await expireSession();
-      } else {
+      // Do not replace the saved profile with something the backend cannot analyse.
+      const verdict = assessProfile(profile, report);
+      if (!verdict.canAnalyze) {
         setNotice({
           tone: 'error',
-          message: errorMessage(err, 'Analysis failed.'),
-          action: { label: 'Try again', onClick: () => void runAnalysis() },
+          message: verdict.blockingReason ?? "Couldn't read this page.",
+          action: { label: 'Copy diagnostic details', onClick: () => void copyDetails(report)() },
         });
+        return;
       }
-    } finally {
-      setPhase(null);
+
+      // A profile page shows only some of the skills. Keep ones saved earlier from the full list.
+      const declared = report.declaredCounts?.skills;
+      const partial = declared !== undefined && profile.skills.length < declared;
+      const toSave = partial ? await withSavedSkills(profile) : profile;
+
+      setPhase('saving');
+      await saveProfile(toSave);
+
+      const url = skillsListUrl(tab.url);
+      const stillMissing = partial && declared !== undefined && toSave.skills.length < declared;
+      const pageWarnings = verdict.warnings.filter(
+        (w) => !PARTIAL_SKILLS_WARNING.test(w) && !(toSave.skills.length > 0 && /^No skills were found/i.test(w)),
+      );
+      await analyzeSavedProfile(
+        `Profile saved: ${summarizeProfile(toSave)}`,
+        pageWarnings,
+        stillMissing && url ? { have: toSave.skills.length, declared, url } : null,
+      );
+    }, () => void runAnalysis());
+  };
+
+  /** Re-run the analysis on the profile already saved in SkillSync (no page needed). */
+  const rerunSaved = async () => {
+    resetResults();
+    setPhase('analyzing');
+    await guarded(() => analyzeSavedProfile(null, [], null), () => void rerunSaved());
+  };
+
+  /** Take the current tab to LinkedIn's full skills list, then close the popup. */
+  const openSkillsList = async (url: string) => {
+    try {
+      const tab = await getActiveTab();
+      if (tab?.id !== undefined) {
+        await chrome.tabs.update(tab.id, { url });
+        window.close();
+        return;
+      }
+    } catch {
+      // Fall through to a new tab.
     }
+    window.open(url, '_blank', 'noreferrer');
   };
 
   // ─── render ───
@@ -345,6 +437,8 @@ function App() {
         <AnalyzeCard
           page={page}
           busy={busy}
+          skillsCount={skillsCount}
+          onRerun={analysis ? () => void rerunSaved() : undefined}
           confirming={confirmAnyway}
           onAnalyze={() => void runAnalysis()}
           onRequestAnyway={() => setConfirmAnyway(true)}
@@ -353,12 +447,22 @@ function App() {
         />
 
         {phase ? (
-          <Loading phase={phase} />
+          <Loading phase={phase} flow={page.kind === 'linkedin-skills' ? 'skills' : 'profile'} />
         ) : (
           <>
             {savedSummary && (
               <Banner tone="success" onDismiss={() => setSavedSummary(null)}>
-                Profile saved: {savedSummary}
+                {savedSummary}
+              </Banner>
+            )}
+            {moreSkills && (
+              <Banner
+                tone="warning"
+                onDismiss={() => setMoreSkills(null)}
+                action={{ label: 'Open full skills list', onClick: () => void openSkillsList(moreSkills.url) }}
+              >
+                Only {moreSkills.have} of your {moreSkills.declared} LinkedIn skills could be read, so the score may be too low. Open the full list,
+                scroll to the bottom, then click &ldquo;Add skills from this page&rdquo;.
               </Banner>
             )}
             {warnings.length > 0 && (
@@ -367,7 +471,15 @@ function App() {
                 onDismiss={() => setWarnings([])}
                 action={{ label: 'Open Profile page', onClick: () => window.open(`${WEB_APP_URL}/profile`, '_blank', 'noreferrer') }}
               >
-                {warnings[0]}
+                {warnings.length === 1 ? (
+                  warnings[0]
+                ) : (
+                  <ul className="list-disc space-y-1 pl-4">
+                    {warnings.slice(0, 3).map((w) => (
+                      <li key={w}>{w}</li>
+                    ))}
+                  </ul>
+                )}
               </Banner>
             )}
 

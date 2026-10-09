@@ -35,3 +35,23 @@ export async function extractFromTab(tab: { id?: number; url?: string }): Promis
   if (!response) return { success: false, error: 'The page did not respond. Refresh it and try again.' };
   return response;
 }
+
+/**
+ * How many skills are currently rendered on the LinkedIn skills-list tab, or null when it
+ * cannot be told (no script listening and none could be injected). Read-only and instant.
+ */
+export async function countSkillsOnTab(tab: { id?: number; url?: string }): Promise<number | null> {
+  const tabId = tab.id;
+  if (tabId === undefined) return null;
+  const ask = (): Promise<{ count?: number } | undefined> => chrome.tabs.sendMessage(tabId, { action: 'COUNT_SKILLS' });
+  try {
+    try {
+      return (await ask())?.count ?? null;
+    } catch {
+      await chrome.scripting.executeScript({ target: { tabId }, files: [contentScriptFor(tab.url)] });
+      return (await ask())?.count ?? null;
+    }
+  } catch {
+    return null;
+  }
+}

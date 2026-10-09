@@ -1,13 +1,18 @@
 import type { ExtractionResponse } from '../../types';
 import { extractWhenReady } from './ready';
 import { isSkillsDetailsPath } from './shared';
-import { readSkillsWhenReady, skillsPageReport } from './skillsPage';
+import { parseSkillsPage, readSkillsWhenReady, skillsPageReport } from './skillsPage';
 
 // The parser lives in parse.ts (pure, unit-tested) and the bounded wait for
 // LinkedIn's lazily rendered content in ready.ts. This file only wires them to
 // the message the popup sends. The full skills list page (/details/skills/) has
 // its own, much simpler reader in skillsPage.ts.
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+  // Cheap, instant count so the popup can show "61 skills detected" before the user commits.
+  if (request?.action === 'COUNT_SKILLS') {
+    sendResponse({ count: isSkillsDetailsPath(window.location.pathname) ? parseSkillsPage(document).length : 0 });
+    return undefined;
+  }
   if (request?.action !== 'EXTRACT_PROFILE') return undefined;
 
   if (isSkillsDetailsPath(window.location.pathname)) {

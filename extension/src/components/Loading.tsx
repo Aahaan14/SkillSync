@@ -3,11 +3,20 @@ import { CheckCircle } from './icons';
 
 export type Phase = 'extracting' | 'saving' | 'analyzing';
 
-const STEPS: Array<{ phase: Phase; label: string; hint: string }> = [
-  { phase: 'extracting', label: 'Reading the page', hint: 'Collecting your experience, education and skills' },
-  { phase: 'saving', label: 'Saving your profile', hint: 'Storing it in your SkillSync account' },
-  { phase: 'analyzing', label: 'Analyzing the job market', hint: 'Searching live listings and scoring your skills. This can take up to a minute.' },
-];
+export type Flow = 'profile' | 'skills';
+
+const STEPS: Record<Flow, Array<{ phase: Phase; label: string; hint: string }>> = {
+  profile: [
+    { phase: 'extracting', label: 'Reading the page', hint: 'Collecting your experience, education and skills' },
+    { phase: 'saving', label: 'Saving your profile', hint: 'Storing it in your SkillSync account' },
+    { phase: 'analyzing', label: 'Analyzing the job market', hint: 'Searching live listings and scoring your skills. This can take up to a minute.' },
+  ],
+  skills: [
+    { phase: 'extracting', label: 'Reading the skills list', hint: 'Waiting for LinkedIn to finish loading it' },
+    { phase: 'saving', label: 'Adding skills to your profile', hint: 'Your headline, roles and education stay as they are' },
+    { phase: 'analyzing', label: 'Analyzing the job market', hint: 'Searching live listings and scoring your skills. This can take up to a minute.' },
+  ],
+};
 
 /** Seconds since mount; ticks once a second. */
 function useElapsed(): number {
@@ -19,14 +28,15 @@ function useElapsed(): number {
   return seconds;
 }
 
-export const Loading = ({ phase }: { phase: Phase }) => {
+export const Loading = ({ phase, flow = 'profile' }: { phase: Phase; flow?: Flow }) => {
+  const steps = STEPS[flow];
   const elapsed = useElapsed();
-  const current = STEPS.findIndex((s) => s.phase === phase);
+  const current = steps.findIndex((s) => s.phase === phase);
 
   return (
     <section aria-live="polite" aria-label="Analysis in progress" className="animate-fade-up rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
       <ol className="space-y-3.5">
-        {STEPS.map((step, index) => {
+        {steps.map((step, index) => {
           const done = index < current;
           const active = index === current;
           return (

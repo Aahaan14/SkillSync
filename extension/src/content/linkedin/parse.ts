@@ -609,7 +609,7 @@ export function parseLinkedInProfile(doc: Document, url: string): { profile: Pro
     warnings.push('No skills were found on this page. LinkedIn shows most skills on a separate "Show all skills" page.');
   } else if (declaredSkills !== undefined && profile.skills.length < declaredSkills) {
     warnings.push(
-      `Only ${profile.skills.length} of ${declaredSkills} skills are visible on this profile page. LinkedIn lists the rest on its "Show all skills" page, which SkillSync does not open for you; add any missing skills on the dashboard Profile page.`,
+      `Only ${profile.skills.length} of ${declaredSkills} skills are visible on this profile page. LinkedIn lists the rest on its "Show all skills" page. Open that page, scroll to the bottom, then open SkillSync there and click "Add skills from this page".`,
     );
   }
   if (!sections.includes('skills') && profile.skills.length) {

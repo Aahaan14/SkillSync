@@ -23,6 +23,8 @@ function describe(page: PageInfo): { title: string; pill: string; pillClass: str
 export const AnalyzeCard = ({
   page,
   busy,
+  skillsCount,
+  onRerun,
   confirming,
   onAnalyze,
   onRequestAnyway,
@@ -31,6 +33,10 @@ export const AnalyzeCard = ({
 }: {
   page: PageInfo;
   busy: boolean;
+  /** Skills-list tab only: how many skills are loaded (undefined while counting, null if unknown). */
+  skillsCount?: number | null;
+  /** Re-run the analysis on the saved profile; omitted when there is nothing to re-run. */
+  onRerun?: () => void;
   confirming: boolean;
   onAnalyze: () => void;
   onRequestAnyway: () => void;
@@ -39,7 +45,8 @@ export const AnalyzeCard = ({
 }) => {
   const { title, pill, pillClass, Icon } = describe(page);
   const skillsPage = page.kind === 'linkedin-skills';
-  const ready = page.kind === 'linkedin-profile' || skillsPage;
+  const nothingLoaded = skillsPage && skillsCount === 0;
+  const ready = (page.kind === 'linkedin-profile' || skillsPage) && !nothingLoaded;
 
   return (
     <section aria-label="Analyze this page" className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
@@ -78,14 +85,41 @@ export const AnalyzeCard = ({
             </span>
           </button>
           {skillsPage ? (
-            <p className="mt-2.5 text-center text-xs text-zinc-500">Scroll to the bottom first so every skill loads. Adds them to your saved profile and re-runs the analysis.</p>
+            <p className="mt-2.5 text-center text-xs leading-snug text-zinc-500" aria-live="polite">
+              {skillsCount === undefined
+                ? 'Counting skills on this page…'
+                : skillsCount === null
+                  ? 'Scroll to the bottom first so every skill loads.'
+                  : skillsCount === 0
+                    ? 'No skills are loaded yet. Scroll down so the list appears, then reopen SkillSync.'
+                    : (
+                      <>
+                        <strong className="font-semibold text-emerald-300">{skillsCount} skills</strong> loaded on this page. Is that all of them? Scroll to
+                        the bottom first. They are added to your saved profile.
+                      </>
+                    )}
+            </p>
           ) : ready ? (
             <p className="mt-2.5 text-center text-xs text-zinc-500">Reads this page and saves it as your SkillSync profile.</p>
+          ) : page.kind === 'linkedin-other' ? (
+            <p className="mt-2.5 text-center text-xs leading-snug text-zinc-500">
+              This is a LinkedIn page, but not a profile. Open your profile (linkedin.com/in/your-name) to analyze it.
+            </p>
           ) : page.kind === 'other' ? (
             <button type="button" disabled={busy} onClick={onRequestAnyway} className="mt-2.5 block w-full text-center text-xs text-zinc-500 underline-offset-2 hover:text-zinc-300 hover:underline">
               Analyze this page anyway…
             </button>
           ) : null}
+          {onRerun && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onRerun}
+              className="mt-2 block w-full text-center text-xs text-zinc-500 underline-offset-2 hover:text-zinc-300 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Re-run with my saved profile
+            </button>
+          )}
         </>
       )}
     </section>
